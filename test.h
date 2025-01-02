@@ -98,6 +98,8 @@ void test() {
   test("pow(2,3)", std::pow(2,3)); // function call
   test("sum{1,2,3}", 1+2+3); // set operation
   test("∑{1,2,3}", 1+2+3); // sum and symbolic name
+  test("abs(3)", 3); // set operation
+  test("abs(-3)", 3); // set operation
   test("avg{1,2,3}", (double)(1+2+3)/3); // set operation
   test("min{1,2,3}", 1); // set operation
   test("max{1,2,3}", 3); // set operation
@@ -135,6 +137,10 @@ void test() {
   test("if true then 1 else if false then 0 else -1", 1); // if_then_else
   test("if false then 1 else if true then 0 else -1", 0); // if_then_else
   test("if false then 1 else if false then 0 else -1", -1); // if_then_else
+  test("n_ary_if(1 < 2, 3, 4 < 5, 6, 7)", 3); // n_ary_if(condition1, result1, condition2, result2, elseResult)
+  test("n_ary_if(1 > 2, 3, 4 < 5, 6, 7)", 6); // n_ary_if(condition1, result1, condition2, result2, elseResult)
+  test("n_ary_if(1 > 2, 3, 4 > 5, 6, 7)", 7); // n_ary_if(condition1, result1, condition2, result2, elseResult)
+  
   test("1<2", 1); // less_than
   test("2<2", 0); // less_than
   test("2<=2", 1); // less_or_equal
