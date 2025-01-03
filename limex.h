@@ -25,7 +25,7 @@ namespace LIMEX {
  */
 struct Token {
   enum class Category { PREFIX, OPERAND, POSTFIX, INFIX }; /// Categories of input to be parsed by lexer
-  enum class Type { NUMBER, VARIABLE, OPERATOR, SEPARATOR, GROUP, SET, FUNCTION_CALL, SET_OPERATION, INDEXED_VARIABLE };    
+  enum class Type { NUMBER, VARIABLE, OPERATOR, SEPARATOR, GROUP, SET, SEQUENCE, FUNCTION_CALL, SET_OPERATION, INDEXED_VARIABLE };    
   Token(Category category, Type type, std::string value = "") : category(category), type(type), value(std::move(value)) {}
   Category category;
   Type type;
@@ -121,6 +121,7 @@ enum class Type {
     variable, // a named variable
     group, // a block encapsulated in '(' and ')'
     set, // a block encapsulated in '{' and '}'
+    sequence, // a block encapsulated in '[' and ']'
     function_call,  // a function call of the form '<function_name>(...)'
     set_operation, // a set operation of the form '<operation_name>{...}'
     index,  // an indexing operation of the form '<variable_name>[...]'
@@ -159,6 +160,7 @@ constexpr auto typeName = std::to_array<std::string_view> ({
     "variable", // a named variable
     "group", // a block encapsulated in '(' and ')'
     "set", // a block encapsulated in '{' and '}'
+    "sequence", // a block encapsulated in '[' and ']'
     "function_call",  // a function call of the form '<function_name>(...)'
     "set_operation", // a set operation of the form '<operation_name>{...}'
     "index",  // an indexing operation of the form '<variable_name>[...]'
@@ -321,6 +323,7 @@ inline std::string Token::stringify(int indent) const {
     case Type::SEPARATOR: result += "SEPARATOR"; break;
     case Type::GROUP: result += "GROUP"; break;
     case Type::SET: result += "SET"; break;
+    case Type::SEQUENCE: result += "SEQUENCE"; break;
     case Type::FUNCTION_CALL: result += "FUNCTION_CALL"; break;
     case Type::SET_OPERATION: result += "SET_OPERATION"; break;
     case Type::INDEXED_VARIABLE: result += "INDEXED_VARIABLE"; break;
@@ -387,6 +390,8 @@ inline T Node<T>::evaluate( const std::vector<T>& variableValues, const std::vec
       return std::get<Node>(operands[0]).evaluate(variableValues,collectionValues);
     case Type::set:
       throw std::runtime_error("LIMEX: Sets cannot be evaluated");
+    case Type::sequence:
+      throw std::runtime_error("LIMEX: Sequences cannot be evaluated");
     case Type::literal:
 //std::cerr << "Literal: " << std::get<double>(operands[0]) << std::endl;
       return std::get<double>(operands[0]);
@@ -845,6 +850,13 @@ inline Token Expression<T>::tokenize(const std::string& input) {
         groupStack.emplace(&groupStack.top().first->children.back(),"}");
         continue;
       }
+      else if ( input[pos] == '[' ) {
+        ++pos;
+        expected = Token::Category::PREFIX;
+        groupStack.top().first->children.emplace_back(Token::Category::OPERAND, Token::Type::SEQUENCE);
+        groupStack.emplace(&groupStack.top().first->children.back(),"]");
+        continue;
+      }
       else {
 //std::cerr << "IF" << startsWith(input,pos,"if") << "/" << pos << std::endl;
         throw std::runtime_error("LIMEX: Unexpected operand at: " + input.substr(0,pos) );
@@ -998,6 +1010,8 @@ inline Node<T> Expression<T>::buildTree( Type type, const std::vector<Token>& to
         return buildTree(Type::group, token.children);
       case Token::Type::SET:
         return buildTree(Type::set, token.children);    
+      case Token::Type::SEQUENCE:
+        return buildTree(Type::sequence, token.children);    
       case Token::Type::FUNCTION_CALL:
         return buildTree(Type::function_call, token.children, getIndex(callables,token.value));    
       case Token::Type::SET_OPERATION:
