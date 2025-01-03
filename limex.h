@@ -31,7 +31,7 @@ struct Token {
   Type type;
   std::string value;
   std::vector<Token> children; // for nested tokens (GROUP, SET, FUNCTION_CALL, SET_OPERATION, INDEXED_VARIABLE)
-  std::string stringify(int indent = 0) const;
+  inline std::string stringify(int indent = 0) const;
 };
 
 enum class Type; /// Types of nodes in the abstract syntax tree
@@ -63,7 +63,7 @@ public:
   template <typename U>
   Node(Expression<T>* expression, const Node<U>& other);
   // Evaluate the node
-  T evaluate( const std::vector<T>& variableValues = {}, const std::vector< std::vector<T> >& collectionValues = {}) const;
+  inline T evaluate( const std::vector<T>& variableValues = {}, const std::vector< std::vector<T> >& collectionValues = {}) const;
   std::string stringify() const;
 };
 
@@ -87,16 +87,16 @@ public:
   template <typename U>
   Expression(const Expression<U>& other);
   enum class BUILTIN { IF_THEN_ELSE, N_ARY_IF, ABS, POW, SQRT, CBRT, SUM, AVG, MIN, MAX, ELEMENT_OF, NOT_ELEMENT_OF, BUILTINS };
-  static void addCallable(const std::string& name, std::function<T(const std::vector<T>&)> callable);
-  static void createBuiltInCallables();
+  inline static void addCallable(const std::string& name, std::function<T(const std::vector<T>&)> callable);
+  inline static void createBuiltInCallables();
   inline static const std::vector<std::string> getCallables() { return callables; }
   inline const std::vector<std::string> getVariables() const { return variables; }
   inline const std::vector<std::string> getCollections() const { return collections; }
   inline const std::optional<std::string> getTarget() const { return target; }
-  T evaluate( const std::vector<T>& variableValues = {}, const std::vector< std::vector<T> >& collectionValues = {}) const;
+  inline T evaluate( const std::vector<T>& variableValues = {}, const std::vector< std::vector<T> >& collectionValues = {}) const;
   inline const Node<T> getRoot() const { return root; }
   const std::string input;
-  std::string stringify() const;
+  inline std::string stringify() const;
 private:
   inline static std::vector<std::function<T(const std::vector<T>&)>> implementation;
   inline static std::vector<std::string> callables;
@@ -104,15 +104,15 @@ private:
   std::vector<std::string> collections;
   std::optional<std::string> target;
   Node<T> root;
-  Node<T> parse();
-  static Token tokenize(const std::string& input);
+  inline Node<T> parse();
+  inline static Token tokenize(const std::string& input);
   inline static bool isnumeric(char c) { return (std::isdigit( c ) || c == '.'); }; 
   inline static bool isalphanumeric(char c) { return (std::isalnum(c) || c == '_'); }; 
-  size_t getIndex(std::vector<std::string>& container, std::string name);
-  static size_t skipWhitespaces(const std::string& input, size_t& pos);
-  static bool startsWith(const std::string& input, size_t pos, std::string_view candidate);
+  inline size_t getIndex(std::vector<std::string>& container, std::string name);
+  inline static size_t skipWhitespaces(const std::string& input, size_t& pos);
+  inline static bool startsWith(const std::string& input, size_t pos, std::string_view candidate);
   template <size_t N>
-  static std::string fetch(const std::string& input, size_t start, const std::array<std::string_view, N>& prefix);
+  inline static std::string fetch(const std::string& input, size_t start, const std::array<std::string_view, N>& prefix);
   Node<T> buildTree( Type type, const std::vector<Token>& tokens, std::optional<size_t> index = std::nullopt );
 };
 
@@ -302,36 +302,38 @@ const std::unordered_map<Type, unsigned int> precedences = {
  ** Token
  *******************************/
 
-std::string Token::stringify(int indent) const {
-      std::string result;
-      for (int i = 0; i < indent; ++i) result += "  ";
+inline std::string Token::stringify(int indent) const {
+  std::string result;
+  for (int i = 0; i < indent; ++i) result += "  ";
         
-       result += "Category: ";
-       result += (category == Category::PREFIX ? "PREFIX" : 
-           category == Category::OPERAND ? "OPERAND" : 
-           category == Category::POSTFIX ? "POSTFIX" : 
-           "INFIX");
-      result += ", Type: ";
-      switch (type) {
-        case Type::NUMBER: result += "NUMBER"; break;
-        case Type::VARIABLE: result += "VARIABLE"; break;
-        case Type::OPERATOR: result += "OPERATOR"; break;
-        case Type::SEPARATOR: result += "SEPARATOR"; break;
-        case Type::GROUP: result += "GROUP"; break;
-        case Type::SET: result += "SET"; break;
-        case Type::FUNCTION_CALL: result += "FUNCTION_CALL"; break;
-        case Type::SET_OPERATION: result += "SET_OPERATION"; break;
-        case Type::INDEXED_VARIABLE: result += "INDEXED_VARIABLE"; break;
-      }
-      result += ", Value: " + value + '\n';
+  result += "Category: ";
+  result += (
+    category == Category::PREFIX ? "PREFIX" : 
+    category == Category::OPERAND ? "OPERAND" : 
+    category == Category::POSTFIX ? "POSTFIX" : 
+    "INFIX"
+  );
+  result += ", Type: ";
+  switch (type) {
+    case Type::NUMBER: result += "NUMBER"; break;
+    case Type::VARIABLE: result += "VARIABLE"; break;
+    case Type::OPERATOR: result += "OPERATOR"; break;
+    case Type::SEPARATOR: result += "SEPARATOR"; break;
+    case Type::GROUP: result += "GROUP"; break;
+    case Type::SET: result += "SET"; break;
+    case Type::FUNCTION_CALL: result += "FUNCTION_CALL"; break;
+    case Type::SET_OPERATION: result += "SET_OPERATION"; break;
+    case Type::INDEXED_VARIABLE: result += "INDEXED_VARIABLE"; break;
+  }
+  result += ", Value: " + value + '\n';
 
-      if (!children.empty()) {
-        for (const auto& child : children) {
-          result += child.stringify(indent + 1);
-        }
-      }
-      return result;
+  if (!children.empty()) {
+    for (const auto& child : children) {
+      result += child.stringify(indent + 1);
     }
+  }
+  return result;
+}
 
 
 /*******************************
@@ -378,7 +380,7 @@ Node<T>::Node(Expression<T>* expression, const Node<U>& other)
 }
 
 template <typename T>
-T Node<T>::evaluate( const std::vector<T>& variableValues, const std::vector< std::vector<T> >& collectionValues) const {
+inline T Node<T>::evaluate( const std::vector<T>& variableValues, const std::vector< std::vector<T> >& collectionValues) const {
 //std::cerr << "Type: "<< typeName[(int)type] << std::endl;
   switch (type) {
     case Type::group:
@@ -658,7 +660,7 @@ T Node<T>::evaluate( const std::vector<T>& variableValues, const std::vector< st
 };
 
 template <typename T>
-std::string Node<T>::stringify() const {
+inline std::string Node<T>::stringify() const {
   std::string result;
 //  result += " ";
   result += std::string(typeName[(int)type]) + "( ";
@@ -699,7 +701,7 @@ template <typename U>
 Expression<T>::Expression(const Expression<U>& other) {}
 
 template <typename T>
-void Expression<T>::addCallable(const std::string& name, std::function<T(const std::vector<T>&)> callable) {
+inline void Expression<T>::addCallable(const std::string& name, std::function<T(const std::vector<T>&)> callable) {
   if (std::ranges::find(callables, name) != callables.end()) {
     throw std::runtime_error("LIMEX: Callable with name '" + name + "' already exists");
   }
@@ -708,19 +710,19 @@ void Expression<T>::addCallable(const std::string& name, std::function<T(const s
 }
 
 template <typename T>
-T Expression<T>::evaluate( const std::vector<T>& variableValues, const std::vector< std::vector<T> >& collectionValues) const {
+inline T Expression<T>::evaluate( const std::vector<T>& variableValues, const std::vector< std::vector<T> >& collectionValues) const {
   return root.evaluate(variableValues,collectionValues);
 }
 
 template <typename T>
-Node<T> Expression<T>::parse() {
+inline Node<T> Expression<T>::parse() {
   auto rootToken = tokenize(input);
 //std::cerr << rootToken.stringify() << std::endl;
   return buildTree( Type::group, rootToken.children, std::nullopt );
 }
 
 template <typename T>
-Token Expression<T>::tokenize(const std::string& input) {
+inline Token Expression<T>::tokenize(const std::string& input) {
   Token root = Token( Token::Category::OPERAND, Token::Type::GROUP, "" );
   std::stack< std::pair<Token*,std::string_view> > groupStack;
   groupStack.emplace(&root,"#");
@@ -929,7 +931,7 @@ Token Expression<T>::tokenize(const std::string& input) {
 }
 
 template <typename T>
-size_t Expression<T>::skipWhitespaces(const std::string& input, size_t& pos) {
+inline size_t Expression<T>::skipWhitespaces(const std::string& input, size_t& pos) {
   // Skip whitespaces
   while ( pos < input.length() && std::isspace( input[pos] ) ) {
     ++pos;     
@@ -938,7 +940,7 @@ size_t Expression<T>::skipWhitespaces(const std::string& input, size_t& pos) {
 }
 
 template <typename T>
-bool Expression<T>::startsWith(const std::string& input, size_t start, std::string_view candidate) {
+inline bool Expression<T>::startsWith(const std::string& input, size_t start, std::string_view candidate) {
   if ( input.compare(start, candidate.size(), candidate) == 0 ) {
     // `input` at `start` begins with candidate
     if ( !isalphanumeric( candidate.back() ) ) {
@@ -956,7 +958,7 @@ bool Expression<T>::startsWith(const std::string& input, size_t start, std::stri
 
 template <typename T>
 template <size_t N>
-std::string Expression<T>::fetch(const std::string& input, size_t start, const std::array<std::string_view, N>& prefix) {
+inline std::string Expression<T>::fetch(const std::string& input, size_t start, const std::array<std::string_view, N>& prefix) {
   for (const auto& candidate : prefix) {
     if ( startsWith(input,start,candidate) ) {
       return std::string(candidate);
@@ -966,7 +968,7 @@ std::string Expression<T>::fetch(const std::string& input, size_t start, const s
 }
 
 template <typename T>
-size_t Expression<T>::getIndex(std::vector<std::string>& container, std::string name) {
+inline size_t Expression<T>::getIndex(std::vector<std::string>& container, std::string name) {
   for ( size_t i = 0; i < container.size(); i++) {
     if ( container[i] == name ) {
       return i;
@@ -977,7 +979,7 @@ size_t Expression<T>::getIndex(std::vector<std::string>& container, std::string 
 }
  
 template <typename T>
-Node<T> Expression<T>::buildTree( Type type, const std::vector<Token>& tokens, std::optional<size_t> index ) {
+inline Node<T> Expression<T>::buildTree( Type type, const std::vector<Token>& tokens, std::optional<size_t> index ) {
   std::vector< std::variant< double, size_t, Node<T> > > operands;
   if ( index.has_value() ) {
     operands.emplace_back( index.value() );
@@ -1158,7 +1160,7 @@ Node<T> Expression<T>::buildTree( Type type, const std::vector<Token>& tokens, s
 }
 
 template <typename T>
-std::string Expression<T>::stringify() const {
+inline std::string Expression<T>::stringify() const {
   return root.stringify();
 }
 
@@ -1168,7 +1170,7 @@ std::string Expression<T>::stringify() const {
 
 // Define built-in functions
 template <>
-void Expression<double>::createBuiltInCallables() {
+inline void Expression<double>::createBuiltInCallables() {
   if ( callables.size() >= (size_t)BUILTIN::BUILTINS ) return;
 
   addCallable(
