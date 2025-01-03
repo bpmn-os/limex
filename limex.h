@@ -89,12 +89,12 @@ public:
   enum class BUILTIN { IF_THEN_ELSE, N_ARY_IF, ABS, POW, SQRT, CBRT, SUM, AVG, MIN, MAX, ELEMENT_OF, NOT_ELEMENT_OF, BUILTINS };
   inline static void addCallable(const std::string& name, std::function<T(const std::vector<T>&)> callable);
   inline static void createBuiltInCallables();
-  inline static const std::vector<std::string> getCallables() { return callables; }
-  inline const std::vector<std::string> getVariables() const { return variables; }
-  inline const std::vector<std::string> getCollections() const { return collections; }
-  inline const std::optional<std::string> getTarget() const { return target; }
+  inline static const std::vector<std::string>& getCallables() { return callables; }
+  inline const std::vector<std::string>& getVariables() const { return variables; }
+  inline const std::vector<std::string>& getCollections() const { return collections; }
+  inline const std::optional<std::string>& getTarget() const { return target; }
   inline T evaluate( const std::vector<T>& variableValues = {}, const std::vector< std::vector<T> >& collectionValues = {}) const;
-  inline const Node<T> getRoot() const { return root; }
+  inline const Node<T>& getRoot() const { return root; }
   const std::string input;
   inline std::string stringify() const;
 private:
