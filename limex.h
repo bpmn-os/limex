@@ -88,6 +88,9 @@ public:
   Expression(const Expression<U>& other);
   enum class BUILTIN { IF_THEN_ELSE, N_ARY_IF, ABS, POW, SQRT, CBRT, SUM, AVG, MIN, MAX, ELEMENT_OF, NOT_ELEMENT_OF, BUILTINS };
   inline static void addCallable(const std::string& name, std::function<T(const std::vector<T>&)> callable);
+  inline static void clearCallables();
+  inline static void initialize();
+  inline static void free();
   inline static void createBuiltInCallables();
   inline static const std::vector<std::string>& getCallables() { return callables; }
   inline const std::vector<std::string>& getVariables() const { return variables; }
@@ -712,6 +715,23 @@ inline void Expression<T>::addCallable(const std::string& name, std::function<T(
   }
   callables.push_back(name);
   implementation.emplace_back(std::move(callable));
+}
+
+template <typename T>
+inline void Expression<T>::clearCallables() {
+  callables.clear();
+  implementation.clear();
+}
+
+template <typename T>
+inline void Expression<T>::initialize() {
+  clearCallables();
+  createBuiltInCallables();
+}
+
+template <typename T>
+inline void Expression<T>::free() {
+  clearCallables();
 }
 
 template <typename T>
