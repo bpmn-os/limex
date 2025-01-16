@@ -101,6 +101,7 @@ void test() {
   test("abs(3)", 3); // set operation
   test("abs(-3)", 3); // set operation
   test("avg{1,2,3}", (double)(1+2+3)/3); // set operation
+  test("count{1,2,3}", 3); // set operation
   test("min{1,2,3}", 1); // set operation
   test("max{1,2,3}", 3); // set operation
   test("5*4²", 5*4*4); // postfix and infix

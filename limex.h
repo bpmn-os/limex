@@ -86,7 +86,7 @@ public:
   Expression(const std::string& expression);
   template <typename U>
   Expression(const Expression<U>& other);
-  enum class BUILTIN { IF_THEN_ELSE, N_ARY_IF, ABS, POW, SQRT, CBRT, SUM, AVG, MIN, MAX, ELEMENT_OF, NOT_ELEMENT_OF, BUILTINS };
+  enum class BUILTIN { IF_THEN_ELSE, N_ARY_IF, ABS, POW, SQRT, CBRT, SUM, AVG, COUNT, MIN, MAX, ELEMENT_OF, NOT_ELEMENT_OF, BUILTINS };
   inline static void addCallable(const std::string& name, std::function<T(const std::vector<T>&)> callable);
   inline static void clearCallables();
   inline static void initialize();
@@ -1286,6 +1286,14 @@ inline void Expression<double>::createBuiltInCallables() {
         result += value;
       }
       return result / args.size();
+    }
+  );
+
+  addCallable(
+    std::string("count"), 
+    [](const std::vector<double>& args)
+    {
+      return args.size();
     }
   );
 

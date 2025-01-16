@@ -19,6 +19,11 @@ int main()
   std::cout << c.stringify() << std::endl; 
   std::cout << c.evaluate({{4.0},{4.0}}) << std::endl; 
   LIMEX::Expression<double>::free();
+
+  LIMEX::Expression<double> bounds("3 <= x < y");
+  std::cout << bounds.stringify() << std::endl; 
+  std::cout << bounds.evaluate({{4.0},{4.0}}) << std::endl; 
+  LIMEX::Expression<double>::free();
   
   return 0;
 }
