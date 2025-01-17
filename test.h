@@ -177,6 +177,8 @@ void test() {
 // Collections
   test("x[2]", {}, { {"x", { 2.0, 5.0, 3.0} } }, 5.0); 
   test("y + x[5-2]", { {"y", 5.0} }, { {"x", { 2.0, 5.0, 3.0} } }, 8.0);
+  test("sum{collection[]}", {}, { {"collection", { 2.0, 5.0, 3.0} } }, 10.0); 
+  test("count(collection[])", {}, { {"collection", { 2.0, 5.0, 3.0} } }, 3); 
 
 // Assignments
   test("x := 3", 3);

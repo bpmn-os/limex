@@ -8,6 +8,7 @@
 int main()
 {
   LIMEX::Expression<double>::initialize();
+
   test();
   std::string input = "z -= √(x²+y²)";
   std::cout << "=== " << input << " ===" << std::endl; 
@@ -24,7 +25,7 @@ int main()
   std::cout << bounds.stringify() << std::endl; 
   std::cout << bounds.evaluate({{4.0},{4.0}}) << std::endl; 
   LIMEX::Expression<double>::free();
-  
+
   return 0;
 }
 

@@ -25,7 +25,7 @@ namespace LIMEX {
  */
 struct Token {
   enum class Category { PREFIX, OPERAND, POSTFIX, INFIX }; /// Categories of input to be parsed by lexer
-  enum class Type { NUMBER, VARIABLE, OPERATOR, SEPARATOR, GROUP, SET, SEQUENCE, FUNCTION_CALL, SET_OPERATION, INDEXED_VARIABLE };    
+  enum class Type { NUMBER, VARIABLE, COLLECTION, OPERATOR, SEPARATOR, GROUP, SET, SEQUENCE, FUNCTION_CALL, SET_OPERATION, INDEXED_VARIABLE };    
   Token(Category category, Type type, std::string value = "") : category(category), type(type), value(std::move(value)) {}
   Category category;
   Type type;
@@ -55,8 +55,8 @@ public:
   std::vector< std::variant<double, size_t, Node> > operands;
   // Constructor for a literal node
   Node(Expression<T>* expression, double value);
-  // Constructor for a variable node
-  Node(Expression<T>* expression, std::string name);
+  // Constructor for a variable or collection node
+  Node(Expression<T>* expression, Type type, std::string name);
   // Constructor for a node with multiple operands
   Node(Expression<T>* expression, Type type, std::vector< std::variant<double, size_t, Node> > operands);
   // Templated deep copy constructor
@@ -122,6 +122,7 @@ private:
 enum class Type {
     literal, // a given number
     variable, // a named variable
+    collection, // a named collection
     group, // a block encapsulated in '(' and ')'
     set, // a block encapsulated in '{' and '}'
     sequence, // a block encapsulated in '[' and ']'
@@ -161,6 +162,7 @@ enum class Type {
 constexpr auto typeName = std::to_array<std::string_view> ({ 
     "literal", // a given number
     "variable", // a named variable
+    "collection", // a named collection
     "group", // a block encapsulated in '(' and ')'
     "set", // a block encapsulated in '{' and '}'
     "sequence", // a block encapsulated in '[' and ']'
@@ -322,6 +324,7 @@ inline std::string Token::stringify(int indent) const {
   switch (type) {
     case Type::NUMBER: result += "NUMBER"; break;
     case Type::VARIABLE: result += "VARIABLE"; break;
+    case Type::COLLECTION: result += "COLLECTION"; break;
     case Type::OPERATOR: result += "OPERATOR"; break;
     case Type::SEPARATOR: result += "SEPARATOR"; break;
     case Type::GROUP: result += "GROUP"; break;
@@ -353,12 +356,20 @@ Node<T>::Node(Expression<T>* expression, double value)
   operands.emplace_back(std::move(value));
 }
 
-// Constructor for a variable node
+// Constructor for a variable or collection node
 template <typename T>
-Node<T>::Node(Expression<T>* expression, std::string name)
-: expression(expression), type(Type::variable)
+Node<T>::Node(Expression<T>* expression, Type type, std::string name)
+: expression(expression), type(type)
 {
-  operands.emplace_back(expression->getIndex(expression->variables,name));
+  if ( type == Type::variable ) {
+    operands.emplace_back(expression->getIndex(expression->variables,name));
+  }
+  else if ( type == Type::collection ) {
+    operands.emplace_back(expression->getIndex(expression->collections,name));
+  }
+  else {
+    throw std::logic_error("LIMEX: Unexpected node type");
+  }
 }
 
 template <typename T>
@@ -400,6 +411,9 @@ inline T Node<T>::evaluate( const std::vector<T>& variableValues, const std::vec
       return std::get<double>(operands[0]);
     case Type::variable: {
       return variableValues[std::get<size_t>(operands[0])];
+    }
+    case Type::collection: {
+      throw std::runtime_error("LIMEX: Collections cannot be evaluated");
     }
     case Type::negate: {
       auto operandValue = std::get<Node>(operands[0]).evaluate(variableValues,collectionValues);
@@ -482,6 +496,16 @@ inline T Node<T>::evaluate( const std::vector<T>& variableValues, const std::vec
       if (index >= Expression<T>::getCallables().size()) {
         throw std::runtime_error("LIMEX: Callable index out of range");
       }
+      if (
+        operands.size() == 2 && 
+        std::holds_alternative<Node>(operands[1]) &&
+        std::get<Node>(operands[1]).type == Type::collection
+      ) {
+        // argument is a collection
+        auto collection = std::get<size_t>(std::get<Node>(operands[1]).operands[0]);
+        return Expression<T>::implementation[index](collectionValues[collection]);
+      }
+      
       // Collect all evaluated arguments
       std::vector<T> arguments;
       for (size_t i = 1; i < operands.size(); ++i) {
@@ -680,6 +704,9 @@ inline std::string Node<T>::stringify() const {
       if ( type == Type::variable ) {
         result += expression->variables.at(std::get<size_t>(operand)) + ", ";
       }
+      else if ( type == Type::collection ) {
+        result += expression->collections.at(std::get<size_t>(operand)) + ", ";
+      }
       else if ( type == Type::index ) {
         result += expression->collections.at(std::get<size_t>(operand)) + ", ";
       }
@@ -818,6 +845,11 @@ inline Token Expression<T>::tokenize(const std::string& input) {
           groupStack.top().first->children.emplace_back(Token::Category::OPERAND, Token::Type::FUNCTION_CALL, name);
           groupStack.emplace(&groupStack.top().first->children.back(),")");
           continue;
+        }
+        else if ( startsWith(input,pos,"[]") ) {
+          pos += 2;
+          expected = Token::Category::OPERAND;
+          groupStack.top().first->children.emplace_back(Token::Category::OPERAND, Token::Type::COLLECTION, name);
         }
         else if ( pos < input.length() && input[pos] == '[' ) {
           ++pos;
@@ -1025,7 +1057,9 @@ inline Node<T> Expression<T>::buildTree( Type type, const std::vector<Token>& to
       case Token::Type::NUMBER:
         return Node<T>(this, std::stod(token.value));
       case Token::Type::VARIABLE:
-        return Node<T>(this, token.value);
+        return Node<T>(this, Type::variable, token.value);
+      case Token::Type::COLLECTION:
+        return Node<T>(this, Type::collection, token.value);
       case Token::Type::GROUP:
         return buildTree(Type::group, token.children);
       case Token::Type::SET:
