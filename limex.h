@@ -25,12 +25,12 @@ namespace LIMEX {
  */
 struct Token {
   enum class Category { PREFIX, OPERAND, POSTFIX, INFIX }; /// Categories of input to be parsed by lexer
-  enum class Type { NUMBER, VARIABLE, COLLECTION, OPERATOR, SEPARATOR, GROUP, SET, SEQUENCE, FUNCTION_CALL, SET_OPERATION, INDEXED_VARIABLE };    
+  enum class Type { NUMBER, VARIABLE, COLLECTION, OPERATOR, SEPARATOR, GROUP, SET, SEQUENCE, FUNCTION_CALL, AGGREGATION, INDEXED_VARIABLE };    
   Token(Category category, Type type, std::string value = "") : category(category), type(type), value(std::move(value)) {}
   Category category;
   Type type;
   std::string value;
-  std::vector<Token> children; // for nested tokens (GROUP, SET, FUNCTION_CALL, SET_OPERATION, INDEXED_VARIABLE)
+  std::vector<Token> children; // for nested tokens (GROUP, SET, FUNCTION_CALL, AGGREGATION, INDEXED_VARIABLE)
   inline std::string stringify(int indent = 0) const;
 };
 
@@ -127,7 +127,7 @@ enum class Type {
     set, // a block encapsulated in '{' and '}'
     sequence, // a block encapsulated in '[' and ']'
     function_call,  // a function call of the form '<function_name>(...)'
-    set_operation, // a set operation of the form '<operation_name>{...}'
+    aggregation, // an aggregate operation of the form '<operation_name>{...}'
     index,  // an indexing operation of the form '<variable_name>[...]'
     negate,
     logical_not,
@@ -167,7 +167,7 @@ constexpr auto typeName = std::to_array<std::string_view> ({
     "set", // a block encapsulated in '{' and '}'
     "sequence", // a block encapsulated in '[' and ']'
     "function_call",  // a function call of the form '<function_name>(...)'
-    "set_operation", // a set operation of the form '<operation_name>{...}'
+    "aggregation", // an aggregate operation of the form '<operation_name>{...}'
     "index",  // an indexing operation of the form '<variable_name>[...]'
     "negate",
     "logical_not",
@@ -267,7 +267,7 @@ const std::unordered_map<Type, unsigned int> precedences = {
     {Type::set, 1},
 
     {Type::function_call, 1},
-    {Type::set_operation, 1},
+    {Type::aggregation, 1},
     {Type::index, 1},
 
     {Type::square, 2},
@@ -331,7 +331,7 @@ inline std::string Token::stringify(int indent) const {
     case Type::SET: result += "SET"; break;
     case Type::SEQUENCE: result += "SEQUENCE"; break;
     case Type::FUNCTION_CALL: result += "FUNCTION_CALL"; break;
-    case Type::SET_OPERATION: result += "SET_OPERATION"; break;
+    case Type::AGGREGATION: result += "AGGREGATION"; break;
     case Type::INDEXED_VARIABLE: result += "INDEXED_VARIABLE"; break;
   }
   result += ", Value: " + value + '\n';
@@ -490,7 +490,7 @@ inline T Node<T>::evaluate( const std::vector<T>& variableValues, const std::vec
       return Expression<T>::implementation[index](arguments);
     }
     case Type::function_call: 
-    case Type::set_operation: 
+    case Type::aggregation: 
     {
       size_t index = std::get<size_t>(operands[0]);
       if (index >= Expression<T>::getCallables().size()) {
@@ -861,7 +861,7 @@ inline Token Expression<T>::tokenize(const std::string& input) {
         else if ( pos < input.length() && input[pos] == '{' ) {
           ++pos;
           expected = Token::Category::PREFIX;
-          groupStack.top().first->children.emplace_back(Token::Category::OPERAND, Token::Type::SET_OPERATION, name);
+          groupStack.top().first->children.emplace_back(Token::Category::OPERAND, Token::Type::AGGREGATION, name);
           groupStack.emplace(&groupStack.top().first->children.back(),"}");
           continue;
         }
@@ -882,7 +882,7 @@ inline Token Expression<T>::tokenize(const std::string& input) {
         else if ( pos < input.length() && input[pos] == '{' ) {
           ++pos;
           expected = Token::Category::PREFIX;
-          groupStack.top().first->children.emplace_back(Token::Category::OPERAND, Token::Type::SET_OPERATION, aliases.at(match));
+          groupStack.top().first->children.emplace_back(Token::Category::OPERAND, Token::Type::AGGREGATION, aliases.at(match));
           groupStack.emplace(&groupStack.top().first->children.back(),"}");
           continue;
         }
@@ -1068,8 +1068,8 @@ inline Node<T> Expression<T>::buildTree( Type type, const std::vector<Token>& to
         return buildTree(Type::sequence, token.children);    
       case Token::Type::FUNCTION_CALL:
         return buildTree(Type::function_call, token.children, getIndex(callables,token.value));    
-      case Token::Type::SET_OPERATION:
-        return buildTree(Type::set_operation, token.children, getIndex(callables,token.value));    
+      case Token::Type::AGGREGATION:
+        return buildTree(Type::aggregation, token.children, getIndex(callables,token.value));    
       case Token::Type::INDEXED_VARIABLE:
         return buildTree(Type::index, token.children, getIndex(collections,token.value));    
       default:
