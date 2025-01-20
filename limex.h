@@ -67,6 +67,21 @@ public:
   std::string stringify() const;
 };
 
+template <typename T>
+class Callables {
+friend class Node<T>;
+friend class Expression<T>;
+public:
+  Callables() { initialize(); };
+  inline void add(const std::string& name, std::function<T(const std::vector<T>&)> implementation);
+  inline const std::vector<std::string>& getNames() const { return names; }
+  inline size_t getIndex(const std::string& name) const;
+private:
+  inline void initialize();
+  std::vector<std::function<T(const std::vector<T>&)>> implementations;
+  std::vector<std::string> names;
+};
+
 /**
  * @brief Represents a mathematical expression that can be evaluated for different values.
  * 
@@ -83,16 +98,8 @@ template <typename T>
 class Expression {
 friend class Node<T>;
 public:
-  Expression(const std::string& expression);
-  template <typename U>
-  Expression(const Expression<U>& other);
+  Expression(const std::string& expression, const Callables<T>& callables);
   enum class BUILTIN { IF_THEN_ELSE, N_ARY_IF, ABS, POW, SQRT, CBRT, SUM, AVG, COUNT, MIN, MAX, ELEMENT_OF, NOT_ELEMENT_OF, BUILTINS };
-  inline static void addCallable(const std::string& name, std::function<T(const std::vector<T>&)> callable);
-  inline static void clearCallables();
-  inline static void initialize();
-  inline static void free();
-  inline static void createBuiltInCallables();
-  inline static const std::vector<std::string>& getCallables() { return callables; }
   inline const std::vector<std::string>& getVariables() const { return variables; }
   inline const std::vector<std::string>& getCollections() const { return collections; }
   inline const std::optional<std::string>& getTarget() const { return target; }
@@ -101,8 +108,7 @@ public:
   const std::string input;
   inline std::string stringify() const;
 private:
-  inline static std::vector<std::function<T(const std::vector<T>&)>> implementation;
-  inline static std::vector<std::string> callables;
+  const Callables<T>& callables;
   std::vector<std::string> variables;
   std::vector<std::string> collections;
   std::optional<std::string> target;
@@ -476,7 +482,7 @@ inline T Node<T>::evaluate( const std::vector<T>& variableValues, const std::vec
     }
     case Type::exponentiate: {
       auto index = (size_t)Expression<T>::BUILTIN::POW;
-      if ( index >= Expression<T>::getCallables().size()) {
+      if ( index >= expression->callables.getNames().size()) {
         throw std::runtime_error("LIMEX: Callable index out of range");
       }
       // Collect all evaluated arguments
@@ -487,13 +493,13 @@ inline T Node<T>::evaluate( const std::vector<T>& variableValues, const std::vec
         );
       }
       // Call the custom callable
-      return Expression<T>::implementation[index](arguments);
+      return expression->callables.implementations[index](arguments);
     }
     case Type::function_call: 
     case Type::aggregation: 
     {
       size_t index = std::get<size_t>(operands[0]);
-      if (index >= Expression<T>::getCallables().size()) {
+      if (index >= expression->callables.getNames().size()) {
         throw std::runtime_error("LIMEX: Callable index out of range");
       }
       if (
@@ -503,7 +509,7 @@ inline T Node<T>::evaluate( const std::vector<T>& variableValues, const std::vec
       ) {
         // argument is a collection
         auto collection = std::get<size_t>(std::get<Node>(operands[1]).operands[0]);
-        return Expression<T>::implementation[index](collectionValues[collection]);
+        return expression->callables.implementations[index](collectionValues[collection]);
       }
       
       // Collect all evaluated arguments
@@ -514,7 +520,7 @@ inline T Node<T>::evaluate( const std::vector<T>& variableValues, const std::vec
         );
       }
       // Call the custom callable
-      return Expression<T>::implementation[index](arguments);
+      return expression->callables.implementations[index](arguments);
     }
     case Type::index: 
     {
@@ -550,7 +556,7 @@ inline T Node<T>::evaluate( const std::vector<T>& variableValues, const std::vec
           else if constexpr ( requires { std::declval<T>() == std::declval<T>(); } ) {
             // operator== is available for T and n-ary if statement can be constructed
             auto index = (size_t)Expression<T>::BUILTIN::N_ARY_IF;
-            if ( index >= Expression<T>::getCallables().size()) {
+            if ( index >= expression->callables.getNames().size()) {
               throw std::runtime_error("LIMEX: Callable index out of range");
             }
             // collect arguments for n-ary if statement
@@ -560,7 +566,7 @@ inline T Node<T>::evaluate( const std::vector<T>& variableValues, const std::vec
               arguments.emplace_back( collectionValues[collection][i] );
             }
             arguments.emplace_back( false ); // the else result should never occur
-            return Expression<T>::implementation[index](arguments);
+            return expression->callables.implementations[index](arguments);
           }
           else {
             throw std::logic_error("LIMEX: operator== is undefined");
@@ -573,7 +579,7 @@ inline T Node<T>::evaluate( const std::vector<T>& variableValues, const std::vec
     }
     case Type::element_of: {
       auto index = (size_t)Expression<T>::BUILTIN::ELEMENT_OF;
-      if ( index >= Expression<T>::getCallables().size()) {
+      if ( index >= expression->callables.getNames().size()) {
         throw std::runtime_error("LIMEX: Callable index out of range");
       }
       // Collect all evaluated arguments
@@ -585,12 +591,11 @@ inline T Node<T>::evaluate( const std::vector<T>& variableValues, const std::vec
         );
       }
       // Call the custom callable
-//std::cerr << "Ternary " << index << ": " << Expression<T>::implementation[index](arguments) << std::endl;
-      return Expression<T>::implementation[index](arguments);
+      return expression->callables.implementations[index](arguments);
     }
     case Type::not_element_of: {
       auto index = (size_t)Expression<T>::BUILTIN::NOT_ELEMENT_OF;
-      if ( index >= Expression<T>::getCallables().size()) {
+      if ( index >= expression->callables.getNames().size()) {
         throw std::runtime_error("LIMEX: Callable index out of range");
       }
       // Collect all evaluated arguments
@@ -602,12 +607,11 @@ inline T Node<T>::evaluate( const std::vector<T>& variableValues, const std::vec
         );
       }
       // Call the custom callable
-//std::cerr << "Ternary " << index << ": " << Expression<T>::implementation[index](arguments) << std::endl;
-      return Expression<T>::implementation[index](arguments);
+      return expression->callables.implementations[index](arguments);
     }
     case Type::if_then_else: {
       auto index = (size_t)Expression<T>::BUILTIN::IF_THEN_ELSE;
-      if ( index >= Expression<T>::getCallables().size()) {
+      if ( index >= expression->callables.getNames().size()) {
         throw std::runtime_error("LIMEX: Callable index out of range");
       }
       // Collect all evaluated arguments
@@ -618,8 +622,7 @@ inline T Node<T>::evaluate( const std::vector<T>& variableValues, const std::vec
         );
       }
       // Call the custom callable
-//std::cerr << "Ternary " << index << ": " << Expression<T>::implementation[index](arguments) << std::endl;
-      return Expression<T>::implementation[index](arguments);
+      return expression->callables.implementations[index](arguments);
     }
     case Type::less_than:
     {
@@ -711,7 +714,7 @@ inline std::string Node<T>::stringify() const {
         result += expression->collections.at(std::get<size_t>(operand)) + ", ";
       }
       else {
-        result += expression->callables.at(std::get<size_t>(operand)) + ", ";
+        result += expression->callables.names.at(std::get<size_t>(operand)) + ", ";
       }
     }
     else if (std::holds_alternative< Node<T> >(operand)) {
@@ -729,36 +732,11 @@ inline std::string Node<T>::stringify() const {
  *******************************/
 
 template <typename T>
-Expression<T>::Expression(const std::string& expression) : input(expression), root(parse()) {}
-
-template <typename T>
-template <typename U>
-Expression<T>::Expression(const Expression<U>& other) {}
-
-template <typename T>
-inline void Expression<T>::addCallable(const std::string& name, std::function<T(const std::vector<T>&)> callable) {
-  if (std::ranges::find(callables, name) != callables.end()) {
-    throw std::runtime_error("LIMEX: Callable with name '" + name + "' already exists");
-  }
-  callables.push_back(name);
-  implementation.emplace_back(std::move(callable));
-}
-
-template <typename T>
-inline void Expression<T>::clearCallables() {
-  callables.clear();
-  implementation.clear();
-}
-
-template <typename T>
-inline void Expression<T>::initialize() {
-  clearCallables();
-  createBuiltInCallables();
-}
-
-template <typename T>
-inline void Expression<T>::free() {
-  clearCallables();
+Expression<T>::Expression(const std::string& expression, const Callables<T>& callables)
+  : input(expression)
+  , callables(callables) 
+  , root(parse()) 
+{
 }
 
 template <typename T>
@@ -1067,9 +1045,9 @@ inline Node<T> Expression<T>::buildTree( Type type, const std::vector<Token>& to
       case Token::Type::SEQUENCE:
         return buildTree(Type::sequence, token.children);    
       case Token::Type::FUNCTION_CALL:
-        return buildTree(Type::function_call, token.children, getIndex(callables,token.value));    
+        return buildTree(Type::function_call, token.children, callables.getIndex(token.value));    
       case Token::Type::AGGREGATION:
-        return buildTree(Type::aggregation, token.children, getIndex(callables,token.value));    
+        return buildTree(Type::aggregation, token.children, callables.getIndex(token.value));    
       case Token::Type::INDEXED_VARIABLE:
         return buildTree(Type::index, token.children, getIndex(collections,token.value));    
       default:
@@ -1233,15 +1211,32 @@ inline std::string Expression<T>::stringify() const {
 }
 
 /*******************************
- ** createBuiltInCallables()
+ ** Callables
  *******************************/
+
+template <typename T>
+inline size_t Callables<T>::getIndex(const std::string& name) const {
+  for ( size_t i = 0; i < names.size(); i++) {
+    if ( names[i] == name ) {
+      return i;
+    }
+  }
+  throw std::logic_error("LIMEX: Unknown callable '" + name + "'");
+}
+
+template <typename T>
+inline void Callables<T>::add(const std::string& name, std::function<T(const std::vector<T>&)> implementation) {
+  if (std::ranges::find(names, name) != names.end()) {
+    throw std::runtime_error("LIMEX: Callable with name '" + name + "' already exists");
+  }
+  names.push_back(name);
+  implementations.emplace_back(std::move(implementation));
+}
 
 // Define built-in functions
 template <>
-inline void Expression<double>::createBuiltInCallables() {
-  if ( callables.size() >= (size_t)BUILTIN::BUILTINS ) return;
-
-  addCallable(
+inline void Callables<double>::initialize() {
+  add(
     std::string("if_then_else"), 
     [](const std::vector<double>& args)
     {
@@ -1250,7 +1245,7 @@ inline void Expression<double>::createBuiltInCallables() {
     }
   );
 
-  addCallable(
+  add(
     std::string("n_ary_if"), 
     [](const std::vector<double>& args)
     {
@@ -1262,7 +1257,7 @@ inline void Expression<double>::createBuiltInCallables() {
     }
   );
 
-  addCallable(
+  add(
     std::string("abs"), 
     [](const std::vector<double>& args)
     {
@@ -1271,7 +1266,7 @@ inline void Expression<double>::createBuiltInCallables() {
     }
   );
 
-  addCallable(
+  add(
     std::string("pow"), 
     [](const std::vector<double>& args)
     {
@@ -1280,7 +1275,7 @@ inline void Expression<double>::createBuiltInCallables() {
     }
   );
 
-  addCallable(
+  add(
     std::string("sqrt"), 
     [](const std::vector<double>& args)
     {
@@ -1289,7 +1284,7 @@ inline void Expression<double>::createBuiltInCallables() {
     }
   );
 
-  addCallable(
+  add(
     std::string("cbrt"), 
     [](const std::vector<double>& args)
     {
@@ -1298,7 +1293,7 @@ inline void Expression<double>::createBuiltInCallables() {
     }
   );
 
-  addCallable(
+  add(
     std::string("sum"), 
     [](const std::vector<double>& args)
     {
@@ -1310,7 +1305,7 @@ inline void Expression<double>::createBuiltInCallables() {
     }
   );
 
-  addCallable(
+  add(
     std::string("avg"), 
     [](const std::vector<double>& args)
     {
@@ -1323,7 +1318,7 @@ inline void Expression<double>::createBuiltInCallables() {
     }
   );
 
-  addCallable(
+  add(
     std::string("count"), 
     [](const std::vector<double>& args)
     {
@@ -1331,7 +1326,7 @@ inline void Expression<double>::createBuiltInCallables() {
     }
   );
 
-  addCallable(
+  add(
     std::string("min"), 
     [](const std::vector<double>& args)
     {
@@ -1346,7 +1341,7 @@ inline void Expression<double>::createBuiltInCallables() {
     }
   );
 
-  addCallable(
+  add(
     std::string("max"), 
     [](const std::vector<double>& args)
     {
@@ -1361,7 +1356,7 @@ inline void Expression<double>::createBuiltInCallables() {
     }
   );
 
-  addCallable(
+  add(
     std::string("element_of"), 
     [](const std::vector<double>& args)
     {
@@ -1375,7 +1370,7 @@ inline void Expression<double>::createBuiltInCallables() {
     }
   );
 
-  addCallable(
+  add(
     std::string("not_element_of"), 
     [](const std::vector<double>& args)
     {

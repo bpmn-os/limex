@@ -7,8 +7,9 @@ constexpr const char* GREEN_COLOR = "\033[32m";
 constexpr const char* RED_COLOR   = "\033[31m";
 
 void test( std::string input,  double result ) {
+  LIMEX::Callables<double> callables;
   try {
-    LIMEX::Expression<double> expression(input);
+    LIMEX::Expression<double> expression(input,callables);
     std::cerr << input << " = " << expression.evaluate() ;
     if (expression.evaluate() == result) {
       std::cerr << GREEN_COLOR << " [pass]" << RESET_COLOR << std::endl;
@@ -24,8 +25,9 @@ void test( std::string input,  double result ) {
 }
 
 void test( std::string input, std::map<std::string,double> valueMap, double result ) {
+  LIMEX::Callables<double> callables;
   try {
-    LIMEX::Expression<double> expression(input);
+    LIMEX::Expression<double> expression(input,callables);
     std::vector<double> variableValues;
     for ( auto variable : expression.getVariables() ) {
       std::cerr << variable << " = " << valueMap.at(variable) << " ";    
@@ -46,8 +48,9 @@ void test( std::string input, std::map<std::string,double> valueMap, double resu
 }
 
 void test( std::string input, std::map<std::string,double> valueMap, std::map<std::string,std::vector<double>> collectionMap, double result ) {
+  LIMEX::Callables<double> callables;
   try {
-    LIMEX::Expression<double> expression(input);
+    LIMEX::Expression<double> expression(input,callables);
     std::vector<double> variableValues;
     for ( auto variable : expression.getVariables() ) {
       std::cerr << variable << " = " << valueMap.at(variable) << " ";    
@@ -78,9 +81,6 @@ void test( std::string input, std::map<std::string,double> valueMap, std::map<st
 }
 
 void test() {
-  // Create built-in functions
-  LIMEX::Expression<double>::createBuiltInCallables();
-
 // Literals
   test("3*5", 3*5); // multiply
   test("-3*-5", -3*-5); // multiply and negate
