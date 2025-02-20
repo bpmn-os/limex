@@ -523,7 +523,7 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const collec
           return expression->callables.implementations[index](collectionValues[collection]);
         }
         else {
-          // assume C is a std::reference_wrapper of an object that can be cast to T
+          // assume C can be cast to std::vector<T>
           std::vector<T> values = collectionValues[collection].get();
           return expression->callables.implementations[index](values);
         }
@@ -600,6 +600,7 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const collec
           }
           else {
             if ( std::get<Node>(operands[1]).type == Type::variable ) {
+              // assume C has operator[] accepting T as argument
               auto index = std::get<size_t>(std::get<Node>(operands[1]).operands[0]);
               return collectionValues[collection].get()[ variableValues[ index ] ];       
             }
