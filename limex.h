@@ -49,6 +49,11 @@ template <typename T, typename C = std::vector<T> > class Expression;
  */
 template <typename T, typename C = std::vector<T> >
 class Node {
+  using collection_vector = std::conditional_t<
+    std::is_same_v<C, std::vector<T>>,
+    std::vector<C>,                         // If C is std::vector<T>, use std::vector<C>
+    std::vector<std::reference_wrapper<C>>  // Otherwise, use std::vector<std::reference_wrapper<C>>
+  >;
 public:
   Expression<T,C>* expression;
   Type type;
@@ -63,7 +68,7 @@ public:
   template <typename U>
   Node(Expression<T,C>* expression, const Node<U>& other);
   // Evaluate the node
-  inline T evaluate( const std::vector<T>& variableValues = {}, const std::vector<C>& collectionValues = {}) const;
+  inline T evaluate( const std::vector<T>& variableValues = {}, const collection_vector& collectionValues = {}) const;
   std::string stringify() const;
 };
 
@@ -97,13 +102,18 @@ private:
 template <typename T, typename C >
 class Expression {
 friend class Node<T,C>;
+  using collection_vector = std::conditional_t<
+    std::is_same_v<C, std::vector<T>>,
+    std::vector<C>,                         // If C is std::vector<T>, use std::vector<C>
+    std::vector<std::reference_wrapper<C>>  // Otherwise, use std::vector<std::reference_wrapper<C>>
+  >;
 public:
   Expression(const std::string& expression, const Callables<T,C>& callables);
   enum class BUILTIN { IF_THEN_ELSE, N_ARY_IF, ABS, POW, SQRT, CBRT, SUM, AVG, COUNT, MIN, MAX, ELEMENT_OF, NOT_ELEMENT_OF, BUILTINS };
   inline const std::vector<std::string>& getVariables() const { return variables; }
   inline const std::vector<std::string>& getCollections() const { return collections; }
   inline const std::optional<std::string>& getTarget() const { return target; }
-  inline T evaluate( const std::vector<T>& variableValues = {}, const std::vector<C>& collectionValues = {}) const;
+  inline T evaluate( const std::vector<T>& variableValues = {}, const collection_vector& collectionValues = {}) const;
   inline const Node<T,C>& getRoot() const { return root; }
   const std::string input;
   inline std::string stringify() const;
@@ -403,7 +413,7 @@ Node<T,C>::Node(Expression<T,C>* expression, const Node<U>& other)
 }
 
 template <typename T, typename C>
-inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const std::vector<C>& collectionValues) const {
+inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const collection_vector& collectionValues) const {
 //std::cerr << "Type: "<< typeName[(int)type] << std::endl;
   switch (type) {
     case Type::group:
@@ -766,7 +776,7 @@ Expression<T,C>::Expression(const std::string& expression, const Callables<T,C>&
 }
 
 template <typename T, typename C>
-inline T Expression<T,C>::evaluate( const std::vector<T>& variableValues, const std::vector<C>& collectionValues) const {
+inline T Expression<T,C>::evaluate( const std::vector<T>& variableValues, const collection_vector& collectionValues) const {
   return root.evaluate(variableValues,collectionValues);
 }
 
