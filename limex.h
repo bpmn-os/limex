@@ -36,7 +36,7 @@ struct Token {
 
 enum class Type; /// Types of nodes in the abstract syntax tree
 
-template <typename T> class Expression;
+template <typename T, typename C = std::vector<T> > class Expression;
 
 /**
  * @brief Represents a node in the abstract syntax tree of an expression.
@@ -47,30 +47,30 @@ template <typename T> class Expression;
  * 
  * @tparam T The type of the value held by the node (e.g., double).
  */
-template <typename T>
+template <typename T, typename C = std::vector<T> >
 class Node {
 public:
-  Expression<T>* expression;
+  Expression<T,C>* expression;
   Type type;
   std::vector< std::variant<double, size_t, Node> > operands;
   // Constructor for a literal node
-  Node(Expression<T>* expression, double value);
+  Node(Expression<T,C>* expression, double value);
   // Constructor for a variable or collection node
-  Node(Expression<T>* expression, Type type, std::string name);
+  Node(Expression<T,C>* expression, Type type, std::string name);
   // Constructor for a node with multiple operands
-  Node(Expression<T>* expression, Type type, std::vector< std::variant<double, size_t, Node> > operands);
+  Node(Expression<T,C>* expression, Type type, std::vector< std::variant<double, size_t, Node> > operands);
   // Templated deep copy constructor
   template <typename U>
-  Node(Expression<T>* expression, const Node<U>& other);
+  Node(Expression<T,C>* expression, const Node<U>& other);
   // Evaluate the node
-  inline T evaluate( const std::vector<T>& variableValues = {}, const std::vector< std::vector<T> >& collectionValues = {}) const;
+  inline T evaluate( const std::vector<T>& variableValues = {}, const std::vector<C>& collectionValues = {}) const;
   std::string stringify() const;
 };
 
-template <typename T>
+template <typename T, typename C = std::vector<T> >
 class Callables {
-friend class Node<T>;
-friend class Expression<T>;
+friend class Node<T,C>;
+friend class Expression<T,C>;
 public:
   Callables() { initialize(); };
   inline void add(const std::string& name, std::function<T(const std::vector<T>&)> implementation);
@@ -94,26 +94,26 @@ private:
  * 
  * @tparam T The type of the value used in the expression (e.g., double).
  */
-template <typename T>
+template <typename T, typename C >
 class Expression {
-friend class Node<T>;
+friend class Node<T,C>;
 public:
-  Expression(const std::string& expression, const Callables<T>& callables);
+  Expression(const std::string& expression, const Callables<T,C>& callables);
   enum class BUILTIN { IF_THEN_ELSE, N_ARY_IF, ABS, POW, SQRT, CBRT, SUM, AVG, COUNT, MIN, MAX, ELEMENT_OF, NOT_ELEMENT_OF, BUILTINS };
   inline const std::vector<std::string>& getVariables() const { return variables; }
   inline const std::vector<std::string>& getCollections() const { return collections; }
   inline const std::optional<std::string>& getTarget() const { return target; }
-  inline T evaluate( const std::vector<T>& variableValues = {}, const std::vector< std::vector<T> >& collectionValues = {}) const;
-  inline const Node<T>& getRoot() const { return root; }
+  inline T evaluate( const std::vector<T>& variableValues = {}, const std::vector<C>& collectionValues = {}) const;
+  inline const Node<T,C>& getRoot() const { return root; }
   const std::string input;
   inline std::string stringify() const;
 private:
-  const Callables<T>& callables;
+  const Callables<T,C>& callables;
   std::vector<std::string> variables;
   std::vector<std::string> collections;
   std::optional<std::string> target;
-  Node<T> root;
-  inline Node<T> parse();
+  Node<T,C> root;
+  inline Node<T,C> parse();
   inline static Token tokenize(const std::string& input);
   inline static bool isnumeric(char c) { return (std::isdigit( c ) || c == '.'); }; 
   inline static bool isalphanumeric(char c) { return (std::isalnum(c) || c == '_'); }; 
@@ -122,7 +122,7 @@ private:
   inline static bool startsWith(const std::string& input, size_t pos, std::string_view candidate);
   template <size_t N>
   inline static std::string fetch(const std::string& input, size_t start, const std::array<std::string_view, N>& prefix);
-  Node<T> buildTree( Type type, const std::vector<Token>& tokens, std::optional<size_t> index = std::nullopt );
+  Node<T,C> buildTree( Type type, const std::vector<Token>& tokens, std::optional<size_t> index = std::nullopt );
 };
 
 enum class Type {
@@ -355,16 +355,16 @@ inline std::string Token::stringify(int indent) const {
  ** Node
  *******************************/
 
-template <typename T>
-Node<T>::Node(Expression<T>* expression, double value)
+template <typename T, typename C>
+Node<T,C>::Node(Expression<T,C>* expression, double value)
 : expression(expression), type(Type::literal)
 {
   operands.emplace_back(std::move(value));
 }
 
 // Constructor for a variable or collection node
-template <typename T>
-Node<T>::Node(Expression<T>* expression, Type type, std::string name)
+template <typename T, typename C>
+Node<T,C>::Node(Expression<T,C>* expression, Type type, std::string name)
 : expression(expression), type(type)
 {
   if ( type == Type::variable ) {
@@ -378,13 +378,13 @@ Node<T>::Node(Expression<T>* expression, Type type, std::string name)
   }
 }
 
-template <typename T>
-Node<T>::Node(Expression<T>* expression, Type type, std::vector< std::variant< double, size_t, Node<T> > > operands)
+template <typename T, typename C>
+Node<T,C>::Node(Expression<T,C>* expression, Type type, std::vector< std::variant< double, size_t, Node<T,C> > > operands)
 : expression(expression), type(type), operands(std::move(operands)) {}
 
-template <typename T>
+template <typename T, typename C>
 template <typename U>
-Node<T>::Node(Expression<T>* expression, const Node<U>& other)
+Node<T,C>::Node(Expression<T,C>* expression, const Node<U>& other)
 : expression(expression), type(other.type) 
 {
   operands.reserve(other.operands.size());
@@ -402,8 +402,8 @@ Node<T>::Node(Expression<T>* expression, const Node<U>& other)
   }
 }
 
-template <typename T>
-inline T Node<T>::evaluate( const std::vector<T>& variableValues, const std::vector< std::vector<T> >& collectionValues) const {
+template <typename T, typename C>
+inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const std::vector<C>& collectionValues) const {
 //std::cerr << "Type: "<< typeName[(int)type] << std::endl;
   switch (type) {
     case Type::group:
@@ -481,7 +481,7 @@ inline T Node<T>::evaluate( const std::vector<T>& variableValues, const std::vec
       return value * value * value;
     }
     case Type::exponentiate: {
-      auto index = (size_t)Expression<T>::BUILTIN::POW;
+      auto index = (size_t)Expression<T,C>::BUILTIN::POW;
       if ( index >= expression->callables.getNames().size()) {
         throw std::runtime_error("LIMEX: Callable index out of range");
       }
@@ -509,7 +509,14 @@ inline T Node<T>::evaluate( const std::vector<T>& variableValues, const std::vec
       ) {
         // argument is a collection
         auto collection = std::get<size_t>(std::get<Node>(operands[1]).operands[0]);
-        return expression->callables.implementations[index](collectionValues[collection]);
+        if constexpr (std::is_same_v< std::decay_t<decltype(collectionValues[collection])>, std::vector<T> >) {
+          return expression->callables.implementations[index](collectionValues[collection]);
+        }
+        else {
+          // assume C is a std::reference_wrapper of an object that can be cast to T
+          std::vector<T> values = collectionValues[collection].get();
+          return expression->callables.implementations[index](values);
+        }
       }
       
       // Collect all evaluated arguments
@@ -536,40 +543,59 @@ inline T Node<T>::evaluate( const std::vector<T>& variableValues, const std::vec
           // index is given as a literal 
           auto value = std::get<double>(std::get<Node>(operands[1]).operands[0]);        
           auto index = (size_t)value - 1;
-          if (index >= collectionValues[collection].size()) {
-            throw std::runtime_error("LIMEX: Illegal index for collection");
-          }
-          return collectionValues[collection][index];
-        }
-        else {
-          // index is not given as a literal and has to be determined through evaluation 
-          auto value = std::get<Node>(operands[1]).evaluate(variableValues,collectionValues); 
-                 
-          if constexpr (std::is_arithmetic_v<T>) {
-            // arithmetic value can be cast to index 
-            auto index = (size_t)value - 1;
+          if constexpr (std::is_same_v< std::decay_t<decltype(collectionValues[collection])>, std::vector<T> >) {
             if (index >= collectionValues[collection].size()) {
               throw std::runtime_error("LIMEX: Illegal index for collection");
             }
             return collectionValues[collection][index];
           }
-          else if constexpr ( requires { std::declval<T>() == std::declval<T>(); } ) {
-            // operator== is available for T and n-ary if statement can be constructed
-            auto index = (size_t)Expression<T>::BUILTIN::N_ARY_IF;
-            if ( index >= expression->callables.getNames().size()) {
-              throw std::runtime_error("LIMEX: Callable index out of range");
+          else {
+            if (index >= collectionValues[collection].get().size()) {
+              throw std::runtime_error("LIMEX: Illegal index for collection");
             }
-            // collect arguments for n-ary if statement
-            std::vector<T> arguments;
-            for ( size_t i = 0; i < collectionValues[collection].size(); i++ ) {
-              arguments.emplace_back( value == i+1 );
-              arguments.emplace_back( collectionValues[collection][i] );
+            return collectionValues[collection].get()[index];
+          }
+        }
+        else {
+          if constexpr (std::is_same_v< std::decay_t<decltype(collectionValues[collection])>, std::vector<T> >) {
+            // index is not given as a literal and has to be determined through evaluation 
+            auto value = std::get<Node>(operands[1]).evaluate(variableValues,collectionValues); 
+                 
+            if constexpr (std::is_arithmetic_v<T>) {
+              // arithmetic value can be cast to index 
+              auto index = (size_t)value - 1;
+              if (index >= collectionValues[collection].size()) {
+                throw std::runtime_error("LIMEX: Illegal index for collection");
+              }
+              return collectionValues[collection][index];
             }
-            arguments.emplace_back( false ); // the else result should never occur
-            return expression->callables.implementations[index](arguments);
+            else if constexpr ( requires { std::declval<T>() == std::declval<T>(); } ) {
+              // operator== is available for T and n-ary if statement can be constructed
+              auto index = (size_t)Expression<T,C>::BUILTIN::N_ARY_IF;
+              if ( index >= expression->callables.getNames().size()) {
+                throw std::runtime_error("LIMEX: Callable index out of range");
+              }
+              // collect arguments for n-ary if statement
+              std::vector<T> arguments;
+              for ( size_t i = 0; i < collectionValues[collection].size(); i++ ) {
+                arguments.emplace_back( value == i+1 );
+                arguments.emplace_back( collectionValues[collection][i] );
+              }
+              arguments.emplace_back( false ); // the else result should never occur
+              return expression->callables.implementations[index](arguments);
+            }
+            else {
+              throw std::logic_error("LIMEX: operator== is undefined");
+            }
           }
           else {
-            throw std::logic_error("LIMEX: operator== is undefined");
+            if ( std::get<Node>(operands[1]).type == Type::variable ) {
+              auto index = std::get<size_t>(std::get<Node>(operands[1]).operands[0]);
+              return collectionValues[collection].get()[ variableValues[ index ] ];       
+            }
+            else {
+              throw std::logic_error("LIMEX: index is neither literal nor variable");
+            }            
           }
         }
       }
@@ -594,7 +620,7 @@ inline T Node<T>::evaluate( const std::vector<T>& variableValues, const std::vec
       return expression->callables.implementations[index](arguments);
     }
     case Type::not_element_of: {
-      auto index = (size_t)Expression<T>::BUILTIN::NOT_ELEMENT_OF;
+      auto index = (size_t)Expression<T,C>::BUILTIN::NOT_ELEMENT_OF;
       if ( index >= expression->callables.getNames().size()) {
         throw std::runtime_error("LIMEX: Callable index out of range");
       }
@@ -610,7 +636,7 @@ inline T Node<T>::evaluate( const std::vector<T>& variableValues, const std::vec
       return expression->callables.implementations[index](arguments);
     }
     case Type::if_then_else: {
-      auto index = (size_t)Expression<T>::BUILTIN::IF_THEN_ELSE;
+      auto index = (size_t)Expression<T,C>::BUILTIN::IF_THEN_ELSE;
       if ( index >= expression->callables.getNames().size()) {
         throw std::runtime_error("LIMEX: Callable index out of range");
       }
@@ -694,8 +720,8 @@ inline T Node<T>::evaluate( const std::vector<T>& variableValues, const std::vec
   }
 };
 
-template <typename T>
-inline std::string Node<T>::stringify() const {
+template <typename T, typename C>
+inline std::string Node<T,C>::stringify() const {
   std::string result;
 //  result += " ";
   result += std::string(typeName[(int)type]) + "( ";
@@ -717,8 +743,8 @@ inline std::string Node<T>::stringify() const {
         result += expression->callables.names.at(std::get<size_t>(operand)) + ", ";
       }
     }
-    else if (std::holds_alternative< Node<T> >(operand)) {
-      result += std::get<Node<T>>(operand).stringify() + ", ";
+    else if (std::holds_alternative< Node<T,C> >(operand)) {
+      result += std::get<Node<T,C>>(operand).stringify() + ", ";
     }
   }
   result.pop_back(); // remove trailing ' '
@@ -731,28 +757,28 @@ inline std::string Node<T>::stringify() const {
  ** Expression
  *******************************/
 
-template <typename T>
-Expression<T>::Expression(const std::string& expression, const Callables<T>& callables)
+template <typename T, typename C>
+Expression<T,C>::Expression(const std::string& expression, const Callables<T,C>& callables)
   : input(expression)
   , callables(callables) 
   , root(parse()) 
 {
 }
 
-template <typename T>
-inline T Expression<T>::evaluate( const std::vector<T>& variableValues, const std::vector< std::vector<T> >& collectionValues) const {
+template <typename T, typename C>
+inline T Expression<T,C>::evaluate( const std::vector<T>& variableValues, const std::vector<C>& collectionValues) const {
   return root.evaluate(variableValues,collectionValues);
 }
 
-template <typename T>
-inline Node<T> Expression<T>::parse() {
+template <typename T, typename C>
+inline Node<T,C> Expression<T,C>::parse() {
   auto rootToken = tokenize(input);
 //std::cerr << rootToken.stringify() << std::endl;
   return buildTree( Type::group, rootToken.children, std::nullopt );
 }
 
-template <typename T>
-inline Token Expression<T>::tokenize(const std::string& input) {
+template <typename T, typename C>
+inline Token Expression<T,C>::tokenize(const std::string& input) {
   Token root = Token( Token::Category::OPERAND, Token::Type::GROUP, "" );
   std::stack< std::pair<Token*,std::string_view> > groupStack;
   groupStack.emplace(&root,"#");
@@ -972,8 +998,8 @@ inline Token Expression<T>::tokenize(const std::string& input) {
   return root;
 }
 
-template <typename T>
-inline size_t Expression<T>::skipWhitespaces(const std::string& input, size_t& pos) {
+template <typename T, typename C>
+inline size_t Expression<T,C>::skipWhitespaces(const std::string& input, size_t& pos) {
   // Skip whitespaces
   while ( pos < input.length() && std::isspace( input[pos] ) ) {
     ++pos;     
@@ -981,8 +1007,8 @@ inline size_t Expression<T>::skipWhitespaces(const std::string& input, size_t& p
   return pos;
 }
 
-template <typename T>
-inline bool Expression<T>::startsWith(const std::string& input, size_t start, std::string_view candidate) {
+template <typename T, typename C>
+inline bool Expression<T,C>::startsWith(const std::string& input, size_t start, std::string_view candidate) {
   if ( input.compare(start, candidate.size(), candidate) == 0 ) {
     // `input` at `start` begins with candidate
     if ( !isalphanumeric( candidate.back() ) ) {
@@ -998,9 +1024,9 @@ inline bool Expression<T>::startsWith(const std::string& input, size_t start, st
 }
 
 
-template <typename T>
+template <typename T, typename C>
 template <size_t N>
-inline std::string Expression<T>::fetch(const std::string& input, size_t start, const std::array<std::string_view, N>& prefix) {
+inline std::string Expression<T,C>::fetch(const std::string& input, size_t start, const std::array<std::string_view, N>& prefix) {
   for (const auto& candidate : prefix) {
     if ( startsWith(input,start,candidate) ) {
       return std::string(candidate);
@@ -1009,8 +1035,8 @@ inline std::string Expression<T>::fetch(const std::string& input, size_t start, 
   return ""; // No match found
 }
 
-template <typename T>
-inline size_t Expression<T>::getIndex(std::vector<std::string>& container, std::string name) {
+template <typename T, typename C>
+inline size_t Expression<T,C>::getIndex(std::vector<std::string>& container, std::string name) {
   for ( size_t i = 0; i < container.size(); i++) {
     if ( container[i] == name ) {
       return i;
@@ -1020,24 +1046,24 @@ inline size_t Expression<T>::getIndex(std::vector<std::string>& container, std::
   return container.size()-1;
 }
  
-template <typename T>
-inline Node<T> Expression<T>::buildTree( Type type, const std::vector<Token>& tokens, std::optional<size_t> index ) {
-  std::vector< std::variant< double, size_t, Node<T> > > operands;
+template <typename T, typename C>
+inline Node<T,C> Expression<T,C>::buildTree( Type type, const std::vector<Token>& tokens, std::optional<size_t> index ) {
+  std::vector< std::variant< double, size_t, Node<T,C> > > operands;
   if ( index.has_value() ) {
     operands.emplace_back( index.value() );
   }
 
-  std::stack< Node<T> > nodeStack;
+  std::stack< Node<T,C> > nodeStack;
   std::stack< Type > operatorStack;
 
   auto createNode = [&](const Token& token) {
     switch (token.type) {
       case Token::Type::NUMBER:
-        return Node<T>(this, std::stod(token.value));
+        return Node<T,C>(this, std::stod(token.value));
       case Token::Type::VARIABLE:
-        return Node<T>(this, Type::variable, token.value);
+        return Node<T,C>(this, Type::variable, token.value);
       case Token::Type::COLLECTION:
-        return Node<T>(this, Type::collection, token.value);
+        return Node<T,C>(this, Type::collection, token.value);
       case Token::Type::GROUP:
         return buildTree(Type::group, token.children);
       case Token::Type::SET:
@@ -1069,21 +1095,21 @@ inline Node<T> Expression<T>::buildTree( Type type, const std::vector<Token>& to
         throw std::logic_error("LIMEX: Insufficient operands for ternary operator");
       }
       // Pop three operands and apply the operator
-      Node<T> else_result = std::move(nodeStack.top());
+      Node<T,C> else_result = std::move(nodeStack.top());
 //std::cerr << "else_result: '" << else_result.stringify() << "/" << (int)else_result.type<< std::endl;
       nodeStack.pop();
-      Node<T> then_result = std::move(nodeStack.top());
+      Node<T,C> then_result = std::move(nodeStack.top());
 //std::cerr << "then_result: '" << then_result.stringify() << "/" << (int)then_result.type << std::endl;
       then_result.type = Type::group;
       nodeStack.pop();
-      Node<T> condition = std::move(nodeStack.top());
+      Node<T,C> condition = std::move(nodeStack.top());
 //std::cerr << "condition: '" << condition.stringify() << "/" << (int)condition.type<< std::endl;
       if ( condition.type == Type::if_ ) {
         condition.type = Type::group;
       }
       nodeStack.pop();
 
-      nodeStack.push(Node<T>(this,Type::if_then_else, {std::move(condition), std::move(then_result), std::move(else_result) }));
+      nodeStack.push(Node<T,C>(this,Type::if_then_else, {std::move(condition), std::move(then_result), std::move(else_result) }));
       return;
     }
 
@@ -1092,19 +1118,19 @@ inline Node<T> Expression<T>::buildTree( Type type, const std::vector<Token>& to
       if (nodeStack.size() < 2) {
         throw std::runtime_error("LIMEX: Insufficient operands for assignment");
       }
-      Node<T> right = std::move(nodeStack.top());
+      Node<T,C> right = std::move(nodeStack.top());
       nodeStack.pop();
-      Node<T> left = std::move(nodeStack.top());
+      Node<T,C> left = std::move(nodeStack.top());
       nodeStack.pop();
       if ( left.type != Type::variable ) {
         throw std::runtime_error("LIMEX: illegal target for assignment");
       }
       if ( operatorType == Type::assign ) {
-        nodeStack.push(Node<T>(this,Type::assign, {std::move(right) }));
+        nodeStack.push(Node<T,C>(this,Type::assign, {std::move(right) }));
       }
       else {
         // add_assign, subtract_assign, multiply_assign, or divide_assign
-        nodeStack.push(Node<T>(this,operatorType, {std::move(left), std::move(right) }));
+        nodeStack.push(Node<T,C>(this,operatorType, {std::move(left), std::move(right) }));
       }
       return;
     }
@@ -1113,12 +1139,12 @@ inline Node<T> Expression<T>::buildTree( Type type, const std::vector<Token>& to
       throw std::logic_error("LIMEX: Insufficient operands for infix operator");
     }
     // Pop two operands and apply the operator
-    Node<T> right = std::move(nodeStack.top());
+    Node<T,C> right = std::move(nodeStack.top());
     nodeStack.pop();
-    Node<T> left = std::move(nodeStack.top());
+    Node<T,C> left = std::move(nodeStack.top());
     nodeStack.pop();
 
-    nodeStack.push(Node<T>(this,operatorType, {std::move(left), std::move(right)}));
+    nodeStack.push(Node<T,C>(this,operatorType, {std::move(left), std::move(right)}));
     return;
   };
 
@@ -1141,10 +1167,10 @@ inline Node<T> Expression<T>::buildTree( Type type, const std::vector<Token>& to
       auto node = createNode( tokens[i] );
       // apply postfix and prefix operators
       if ( i + 1 < tokens.size() && tokens[i+1].category == Token::Category::POSTFIX ) {
-        node = Node<T>(this, postfixTypes.at(tokens[i+1].value), { std::move(node) });
+        node = Node<T,C>(this, postfixTypes.at(tokens[i+1].value), { std::move(node) });
       }
       if ( i > 0 && tokens[i-1].category == Token::Category::PREFIX ) {
-        node = Node<T>(this, prefixTypes.at(tokens[i-1].value), { std::move(node) });
+        node = Node<T,C>(this, prefixTypes.at(tokens[i-1].value), { std::move(node) });
       }
       nodeStack.push(std::move(node));
     }
@@ -1202,11 +1228,11 @@ inline Node<T> Expression<T>::buildTree( Type type, const std::vector<Token>& to
   }
 
   operands.emplace_back( std::move(nodeStack.top()) );
-  return Node<T>(this, type, operands);
+  return Node<T,C>(this, type, operands);
 }
 
-template <typename T>
-inline std::string Expression<T>::stringify() const {
+template <typename T, typename C>
+inline std::string Expression<T,C>::stringify() const {
   return root.stringify();
 }
 
@@ -1214,8 +1240,8 @@ inline std::string Expression<T>::stringify() const {
  ** Callables
  *******************************/
 
-template <typename T>
-inline size_t Callables<T>::getIndex(const std::string& name) const {
+template <typename T, typename C>
+inline size_t Callables<T,C>::getIndex(const std::string& name) const {
   for ( size_t i = 0; i < names.size(); i++) {
     if ( names[i] == name ) {
       return i;
@@ -1224,8 +1250,8 @@ inline size_t Callables<T>::getIndex(const std::string& name) const {
   throw std::logic_error("LIMEX: Unknown callable '" + name + "'");
 }
 
-template <typename T>
-inline void Callables<T>::add(const std::string& name, std::function<T(const std::vector<T>&)> implementation) {
+template <typename T, typename C>
+inline void Callables<T,C>::add(const std::string& name, std::function<T(const std::vector<T>&)> implementation) {
   if (std::ranges::find(names, name) != names.end()) {
     throw std::runtime_error("LIMEX: Callable with name '" + name + "' already exists");
   }
