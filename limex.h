@@ -49,11 +49,6 @@ template <typename T, typename C = std::vector<T> > class Expression;
  */
 template <typename T, typename C = std::vector<T> >
 class Node {
-  using collection_vector = std::conditional_t<
-    std::is_same_v<C, std::vector<T>>,
-    std::vector<C>,                         // If C is std::vector<T>, use std::vector<C>
-    std::vector<std::reference_wrapper<C>>  // Otherwise, use std::vector<std::reference_wrapper<C>>
-  >;
 public:
   Expression<T,C>* expression;
   Type type;
@@ -68,19 +63,21 @@ public:
   template <typename U>
   Node(Expression<T,C>* expression, const Node<U>& other);
   // Evaluate the node
-  inline T evaluate( const std::vector<T>& variableValues = {}, const collection_vector& collectionValues = {}) const;
+  inline T evaluate( const std::vector<T>& variableValues = {}, const std::vector<C>& collectionValues = {}) const;
   std::string stringify() const;
 };
 
 template <typename T, typename C = std::vector<T> >
-class Callables {
+class Handle {
 friend class Node<T,C>;
 friend class Expression<T,C>;
 public:
-  Callables() { initialize(); };
+  Handle() { initialize(); };
   inline void add(const std::string& name, std::function<T(const std::vector<T>&)> implementation);
   inline const std::vector<std::string>& getNames() const { return names; }
   inline size_t getIndex(const std::string& name) const;
+  inline T indexedEvaluation( const C& collection, const T& index ) const; 
+  inline T aggregateEvaluation( const std::string& name, const C& collection ) const; 
 private:
   inline void initialize();
   std::vector<std::function<T(const std::vector<T>&)>> implementations;
@@ -94,31 +91,26 @@ private:
  * and evaluate it based on the provided variable and collection values. The expression can include 
  * variables, functions, operators, and other mathematical operations, which are processed and executed 
  * during evaluation. Users can defined custom functions and set operators to be used when evaluating an 
- * expression. Several built-in functions and set operators must be made available by calling `createBuiltInCallables()`
- * for the respective type before an expression object can be created, e.g. `LIMEX::Expression<double>::createBuiltInCallables();`.
+ * expression. Several built-in functions and set operators must be made available through an appropriate 
+ * @ref `Handle`.
  * 
  * @tparam T The type of the value used in the expression (e.g., double).
  */
 template <typename T, typename C >
 class Expression {
 friend class Node<T,C>;
-  using collection_vector = std::conditional_t<
-    std::is_same_v<C, std::vector<T>>,
-    std::vector<C>,                         // If C is std::vector<T>, use std::vector<C>
-    std::vector<std::reference_wrapper<C>>  // Otherwise, use std::vector<std::reference_wrapper<C>>
-  >;
 public:
-  Expression(const std::string& expression, const Callables<T,C>& callables);
-  enum class BUILTIN { IF_THEN_ELSE, N_ARY_IF, ABS, POW, SQRT, CBRT, SUM, AVG, COUNT, MIN, MAX, ELEMENT_OF, NOT_ELEMENT_OF, BUILTINS };
+  Expression(const std::string& expression, const Handle<T,C>& handle);
+  enum class BUILTIN { IF_THEN_ELSE, N_ARY_IF, ABS, POW, SQRT, CBRT, SUM, AVG, COUNT, MIN, MAX, ELEMENT_OF, NOT_ELEMENT_OF, AT, BUILTINS };
   inline const std::vector<std::string>& getVariables() const { return variables; }
   inline const std::vector<std::string>& getCollections() const { return collections; }
   inline const std::optional<std::string>& getTarget() const { return target; }
-  inline T evaluate( const std::vector<T>& variableValues = {}, const collection_vector& collectionValues = {}) const;
+  inline T evaluate( const std::vector<T>& variableValues = {}, const std::vector<C>& collectionValues = {}) const;
   inline const Node<T,C>& getRoot() const { return root; }
   const std::string input;
   inline std::string stringify() const;
 private:
-  const Callables<T,C>& callables;
+  const Handle<T,C>& handle;
   std::vector<std::string> variables;
   std::vector<std::string> collections;
   std::optional<std::string> target;
@@ -413,7 +405,7 @@ Node<T,C>::Node(Expression<T,C>* expression, const Node<U>& other)
 }
 
 template <typename T, typename C>
-inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const collection_vector& collectionValues) const {
+inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const std::vector<C>& collectionValues) const {
 //std::cerr << "Type: "<< typeName[(int)type] << std::endl;
   switch (type) {
     case Type::group:
@@ -423,7 +415,6 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const collec
     case Type::sequence:
       throw std::runtime_error("LIMEX: Sequences cannot be evaluated");
     case Type::literal:
-//std::cerr << "Literal: " << std::get<double>(operands[0]) << std::endl;
       return std::get<double>(operands[0]);
     case Type::variable: {
       return variableValues[std::get<size_t>(operands[0])];
@@ -455,7 +446,6 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const collec
     case Type::add: {
       auto left = std::get<Node>(operands[0]).evaluate(variableValues,collectionValues);
       auto right = std::get<Node>(operands[1]).evaluate(variableValues,collectionValues);
-//std::cerr << "Add: " << (left + right).stringify() << std::endl;
       return left + right;
     }
     case Type::subtract: {
@@ -467,7 +457,6 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const collec
     case Type::multiply: {
       auto left = std::get<Node>(operands[0]).evaluate(variableValues,collectionValues);
       auto right = std::get<Node>(operands[1]).evaluate(variableValues,collectionValues);
-//std::cerr << "Multiply: " << left * right << std::endl;
       return left * right;
     }
     case Type::divide: {
@@ -492,7 +481,7 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const collec
     }
     case Type::exponentiate: {
       auto index = (size_t)Expression<T,C>::BUILTIN::POW;
-      if ( index >= expression->callables.getNames().size()) {
+      if ( index >= expression->handle.getNames().size()) {
         throw std::runtime_error("LIMEX: Callable index out of range");
       }
       // Collect all evaluated arguments
@@ -503,41 +492,60 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const collec
         );
       }
       // Call the custom callable
-      return expression->callables.implementations[index](arguments);
+      return expression->handle.implementations[index](arguments);
     }
     case Type::function_call: 
     case Type::aggregation: 
     {
       size_t index = std::get<size_t>(operands[0]);
-      if (index >= expression->callables.getNames().size()) {
+      if (index >= expression->handle.getNames().size()) {
         throw std::runtime_error("LIMEX: Callable index out of range");
       }
-      if (
+      if ( index == (size_t)Expression<T,C>::BUILTIN::AT ) {
+        if constexpr (std::is_same_v< C, std::vector<T> >) {
+          throw std::logic_error("LIMEX: unexpected use of built-in 'at' for double");
+        }
+        else if constexpr (std::is_same_v< C, T >) {
+          // custom index operation
+          auto& collection = std::get<size_t>( std::get<Node>(operands[1]).operands[0] );
+          auto collectionIndex = std::get<Node>(operands[2]).evaluate(variableValues,collectionValues);
+          return expression->handle.indexedEvaluation( collectionValues[collection], collectionIndex );
+        }
+        else {
+          static_assert([]{ return false; }(), "LIMEX: unexpected collection type");
+        }
+      }          
+      else if (
         operands.size() == 2 && 
         std::holds_alternative<Node>(operands[1]) &&
         std::get<Node>(operands[1]).type == Type::collection
       ) {
         // argument is a collection
         auto collection = std::get<size_t>(std::get<Node>(operands[1]).operands[0]);
-        if constexpr (std::is_same_v< std::decay_t<decltype(collectionValues[collection])>, std::vector<T> >) {
-          return expression->callables.implementations[index](collectionValues[collection]);
+        
+        if constexpr (std::is_same_v< C, std::vector<T> >) {
+          // collection type C is vector<T>
+          return expression->handle.implementations[index](collectionValues[collection]);
+        }
+        else if constexpr (std::is_same_v< C, T >) {
+          // collection type C is T
+          return expression->handle.aggregateEvaluation( expression->handle.getNames()[index], collectionValues[collection] );
         }
         else {
-          // assume C can be cast to std::vector<T>
-          std::vector<T> values = collectionValues[collection].get();
-          return expression->callables.implementations[index](values);
+          static_assert([]{ return false; }(), "LIMEX: unexpected collection type");
         }
       }
-      
-      // Collect all evaluated arguments
-      std::vector<T> arguments;
-      for (size_t i = 1; i < operands.size(); ++i) {
-        arguments.push_back(
-          std::get<Node>(operands[i]).evaluate(variableValues,collectionValues)
-        );
+      else {
+        // explicitly collect all evaluated arguments
+        std::vector<T> arguments;
+        for (size_t i = 1; i < operands.size(); ++i) {
+           arguments.push_back(
+            std::get<Node>(operands[i]).evaluate(variableValues,collectionValues)
+          );
+        }
+        // Call the custom callable
+        return expression->handle.implementations[index](arguments);
       }
-      // Call the custom callable
-      return expression->callables.implementations[index](arguments);
     }
     case Type::index: 
     {
@@ -548,75 +556,62 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const collec
       if (collection >= collectionValues.size()) {
         throw std::runtime_error("LIMEX: Insufficient collections provided");
       }
-      if (std::holds_alternative<Node>(operands[1])) {
+      if (!std::holds_alternative<Node>(operands[1])) {
+        throw std::logic_error("LIMEX: Unexpected operand");
+      }
+      if constexpr (std::is_same_v< C, std::vector<T> >) {
+        // collection type C is vector<T>
         if ( std::get<Node>(operands[1]).type == Type::literal ) {
           // index is given as a literal 
           auto value = std::get<double>(std::get<Node>(operands[1]).operands[0]);        
           auto index = (size_t)value - 1;
-          if constexpr (std::is_same_v< std::decay_t<decltype(collectionValues[collection])>, std::vector<T> >) {
+          if (index >= collectionValues[collection].size()) {
+            throw std::runtime_error("LIMEX: Illegal index for collection");
+          }
+          return collectionValues[collection][index];
+        }
+        else {
+          // index is not given as a literal and has to be determined through evaluation
+          auto value = std::get<Node>(operands[1]).evaluate(variableValues,collectionValues); 
+                 
+          if constexpr (std::is_arithmetic_v<T>) {
+            // arithmetic value can be cast to index 
+            auto index = (size_t)value - 1;
             if (index >= collectionValues[collection].size()) {
               throw std::runtime_error("LIMEX: Illegal index for collection");
             }
             return collectionValues[collection][index];
           }
-          else {
-            if (index >= collectionValues[collection].get().size()) {
-              throw std::runtime_error("LIMEX: Illegal index for collection");
+          else if constexpr ( requires { std::declval<T>() == std::declval<T>(); } ) {
+            // operator== is available for T and n-ary if statement can be constructed
+            auto index = (size_t)Expression<T,C>::BUILTIN::N_ARY_IF;
+            if ( index >= expression->handle.getNames().size()) {
+              throw std::runtime_error("LIMEX: Callable index out of range");
             }
-            return collectionValues[collection].get()[index];
-          }
-        }
-        else {
-          if constexpr (std::is_same_v< std::decay_t<decltype(collectionValues[collection])>, std::vector<T> >) {
-            // index is not given as a literal and has to be determined through evaluation 
-            auto value = std::get<Node>(operands[1]).evaluate(variableValues,collectionValues); 
-                 
-            if constexpr (std::is_arithmetic_v<T>) {
-              // arithmetic value can be cast to index 
-              auto index = (size_t)value - 1;
-              if (index >= collectionValues[collection].size()) {
-                throw std::runtime_error("LIMEX: Illegal index for collection");
-              }
-              return collectionValues[collection][index];
+            // collect arguments for n-ary if statement
+            std::vector<T> arguments;
+            for ( size_t i = 0; i < collectionValues[collection].size(); i++ ) {
+              arguments.emplace_back( value == i+1 );
+              arguments.emplace_back( collectionValues[collection][i] );
             }
-            else if constexpr ( requires { std::declval<T>() == std::declval<T>(); } ) {
-              // operator== is available for T and n-ary if statement can be constructed
-              auto index = (size_t)Expression<T,C>::BUILTIN::N_ARY_IF;
-              if ( index >= expression->callables.getNames().size()) {
-                throw std::runtime_error("LIMEX: Callable index out of range");
-              }
-              // collect arguments for n-ary if statement
-              std::vector<T> arguments;
-              for ( size_t i = 0; i < collectionValues[collection].size(); i++ ) {
-                arguments.emplace_back( value == i+1 );
-                arguments.emplace_back( collectionValues[collection][i] );
-              }
-              arguments.emplace_back( false ); // the else result should never occur
-              return expression->callables.implementations[index](arguments);
-            }
-            else {
-              throw std::logic_error("LIMEX: operator== is undefined");
-            }
+            arguments.emplace_back( false ); // the else result should never occur
+            return expression->handle.implementations[index](arguments);
           }
           else {
-            if ( std::get<Node>(operands[1]).type == Type::variable ) {
-              // assume C has operator[] accepting T as argument
-              auto index = std::get<size_t>(std::get<Node>(operands[1]).operands[0]);
-              return collectionValues[collection].get()[ variableValues[ index ] ];       
-            }
-            else {
-              throw std::logic_error("LIMEX: index is neither literal nor variable");
-            }            
+            throw std::logic_error("LIMEX: operator== is undefined");
           }
         }
       }
+      else if constexpr (std::is_same_v< C, T >) {
+        throw std::logic_error("LIMEX: unexpected use of built-in 'index' for collection type");
+      }
       else {
-        throw std::logic_error("LIMEX: Unexpected operand");
+        static_assert([]{ return false; }(), "LIMEX: unexpected collection type");
       }
     }
     case Type::element_of: {
       auto index = (size_t)Expression<T>::BUILTIN::ELEMENT_OF;
-      if ( index >= expression->callables.getNames().size()) {
+      if ( index >= expression->handle.getNames().size()) {
         throw std::runtime_error("LIMEX: Callable index out of range");
       }
       // Collect all evaluated arguments
@@ -628,11 +623,11 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const collec
         );
       }
       // Call the custom callable
-      return expression->callables.implementations[index](arguments);
+      return expression->handle.implementations[index](arguments);
     }
     case Type::not_element_of: {
       auto index = (size_t)Expression<T,C>::BUILTIN::NOT_ELEMENT_OF;
-      if ( index >= expression->callables.getNames().size()) {
+      if ( index >= expression->handle.getNames().size()) {
         throw std::runtime_error("LIMEX: Callable index out of range");
       }
       // Collect all evaluated arguments
@@ -644,11 +639,11 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const collec
         );
       }
       // Call the custom callable
-      return expression->callables.implementations[index](arguments);
+      return expression->handle.implementations[index](arguments);
     }
     case Type::if_then_else: {
       auto index = (size_t)Expression<T,C>::BUILTIN::IF_THEN_ELSE;
-      if ( index >= expression->callables.getNames().size()) {
+      if ( index >= expression->handle.getNames().size()) {
         throw std::runtime_error("LIMEX: Callable index out of range");
       }
       // Collect all evaluated arguments
@@ -659,7 +654,7 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const collec
         );
       }
       // Call the custom callable
-      return expression->callables.implementations[index](arguments);
+      return expression->handle.implementations[index](arguments);
     }
     case Type::less_than:
     {
@@ -751,7 +746,7 @@ inline std::string Node<T,C>::stringify() const {
         result += expression->collections.at(std::get<size_t>(operand)) + ", ";
       }
       else {
-        result += expression->callables.names.at(std::get<size_t>(operand)) + ", ";
+        result += expression->handle.names.at(std::get<size_t>(operand)) + ", ";
       }
     }
     else if (std::holds_alternative< Node<T,C> >(operand)) {
@@ -769,15 +764,15 @@ inline std::string Node<T,C>::stringify() const {
  *******************************/
 
 template <typename T, typename C>
-Expression<T,C>::Expression(const std::string& expression, const Callables<T,C>& callables)
+Expression<T,C>::Expression(const std::string& expression, const Handle<T,C>& handle)
   : input(expression)
-  , callables(callables) 
+  , handle(handle) 
   , root(parse()) 
 {
 }
 
 template <typename T, typename C>
-inline T Expression<T,C>::evaluate( const std::vector<T>& variableValues, const collection_vector& collectionValues) const {
+inline T Expression<T,C>::evaluate( const std::vector<T>& variableValues, const std::vector<C>& collectionValues) const {
   return root.evaluate(variableValues,collectionValues);
 }
 
@@ -814,7 +809,6 @@ inline Token Expression<T,C>::tokenize(const std::string& input) {
     }
 
     if ( expected == Token::Category::OPERAND ) {
-//std::cout << "OPERAND: " << input[pos] <<std::endl;
       if ( auto match = fetch(input, pos, keywords); !match.empty() ) {
 //std::cerr << "keywords" << std::endl;
         pos += match.size();
@@ -1082,11 +1076,23 @@ inline Node<T,C> Expression<T,C>::buildTree( Type type, const std::vector<Token>
       case Token::Type::SEQUENCE:
         return buildTree(Type::sequence, token.children);    
       case Token::Type::FUNCTION_CALL:
-        return buildTree(Type::function_call, token.children, callables.getIndex(token.value));    
+        return buildTree(Type::function_call, token.children, handle.getIndex(token.value));    
       case Token::Type::AGGREGATION:
-        return buildTree(Type::aggregation, token.children, callables.getIndex(token.value));    
+        return buildTree(Type::aggregation, token.children, handle.getIndex(token.value));    
       case Token::Type::INDEXED_VARIABLE:
-        return buildTree(Type::index, token.children, getIndex(collections,token.value));    
+        if constexpr (std::is_same_v< C, std::vector<T> >) {
+          return buildTree(Type::index, token.children, getIndex(collections,token.value));
+        }
+        else if constexpr (std::is_same_v< C, T >) {
+          std::vector<Token> children;
+          children.emplace_back(Token::Category::OPERAND, Token::Type::COLLECTION, token.value);
+          children.emplace_back(Token::Category::INFIX, Token::Type::SEPARATOR, ",");
+          children.insert(children.end(), token.children.begin(), token.children.end());
+          return buildTree(Type::function_call, children, handle.getIndex("at"));
+        }
+        else {
+          throw std::logic_error("LIMEX:Collection type not supported");
+        }
       default:
         throw std::logic_error("LIMEX: Unexpected token type for operand");
     }
@@ -1107,14 +1113,11 @@ inline Node<T,C> Expression<T,C>::buildTree( Type type, const std::vector<Token>
       }
       // Pop three operands and apply the operator
       Node<T,C> else_result = std::move(nodeStack.top());
-//std::cerr << "else_result: '" << else_result.stringify() << "/" << (int)else_result.type<< std::endl;
       nodeStack.pop();
       Node<T,C> then_result = std::move(nodeStack.top());
-//std::cerr << "then_result: '" << then_result.stringify() << "/" << (int)then_result.type << std::endl;
       then_result.type = Type::group;
       nodeStack.pop();
       Node<T,C> condition = std::move(nodeStack.top());
-//std::cerr << "condition: '" << condition.stringify() << "/" << (int)condition.type<< std::endl;
       if ( condition.type == Type::if_ ) {
         condition.type = Type::group;
       }
@@ -1248,11 +1251,11 @@ inline std::string Expression<T,C>::stringify() const {
 }
 
 /*******************************
- ** Callables
+ ** Handle
  *******************************/
 
 template <typename T, typename C>
-inline size_t Callables<T,C>::getIndex(const std::string& name) const {
+inline size_t Handle<T,C>::getIndex(const std::string& name) const {
   for ( size_t i = 0; i < names.size(); i++) {
     if ( names[i] == name ) {
       return i;
@@ -1262,7 +1265,7 @@ inline size_t Callables<T,C>::getIndex(const std::string& name) const {
 }
 
 template <typename T, typename C>
-inline void Callables<T,C>::add(const std::string& name, std::function<T(const std::vector<T>&)> implementation) {
+inline void Handle<T,C>::add(const std::string& name, std::function<T(const std::vector<T>&)> implementation) {
   if (std::ranges::find(names, name) != names.end()) {
     throw std::runtime_error("LIMEX: Callable with name '" + name + "' already exists");
   }
@@ -1272,10 +1275,10 @@ inline void Callables<T,C>::add(const std::string& name, std::function<T(const s
 
 // Define built-in functions
 template <>
-inline void Callables<double>::initialize() {
+inline void Handle<double>::initialize() {
   add(
     std::string("if_then_else"), 
-    [](const std::vector<double>& args)
+    [](const std::vector<double>& args) -> double
     {
       if (args.size() != 3) throw std::runtime_error("LIMEX: if_then_else() requires exactly two arguments");
       return args[0] ? args[1] : args[2];
@@ -1284,7 +1287,7 @@ inline void Callables<double>::initialize() {
 
   add(
     std::string("n_ary_if"), 
-    [](const std::vector<double>& args)
+    [](const std::vector<double>& args) -> double
     {
       if (args.empty() || args.size()%2 != 1) throw std::runtime_error("LIMEX: n_ary_if() requires an unconditional argument");
       for ( size_t i = 0; i < args.size()/2; i++ ) {
@@ -1296,7 +1299,7 @@ inline void Callables<double>::initialize() {
 
   add(
     std::string("abs"), 
-    [](const std::vector<double>& args)
+    [](const std::vector<double>& args) -> double
     {
       if (args.size() != 1) throw std::runtime_error("LIMEX: abs() requires exactly one argument");
       return args[0] >= 0 ? args[0] : -args[0];
@@ -1305,7 +1308,7 @@ inline void Callables<double>::initialize() {
 
   add(
     std::string("pow"), 
-    [](const std::vector<double>& args)
+    [](const std::vector<double>& args) -> double
     {
       if (args.size() != 2) throw std::runtime_error("LIMEX: pow() requires exactly two arguments");
       return std::pow(args[0],args[1]);
@@ -1314,7 +1317,7 @@ inline void Callables<double>::initialize() {
 
   add(
     std::string("sqrt"), 
-    [](const std::vector<double>& args)
+    [](const std::vector<double>& args) -> double
     {
       if (args.size() != 1) throw std::runtime_error("LIMEX: sqrt() requires exactly one argument");
       return std::sqrt(args[0]);
@@ -1323,7 +1326,7 @@ inline void Callables<double>::initialize() {
 
   add(
     std::string("cbrt"), 
-    [](const std::vector<double>& args)
+    [](const std::vector<double>& args) -> double
     {
       if (args.size() != 1) throw std::runtime_error("LIMEX: cbrt() requires exactly one argument");
       return std::cbrt(args[0]);
@@ -1332,7 +1335,7 @@ inline void Callables<double>::initialize() {
 
   add(
     std::string("sum"), 
-    [](const std::vector<double>& args)
+    [](const std::vector<double>& args) -> double
     {
       double result = 0.0;
       for ( double value : args ) {
@@ -1344,7 +1347,7 @@ inline void Callables<double>::initialize() {
 
   add(
     std::string("avg"), 
-    [](const std::vector<double>& args)
+    [](const std::vector<double>& args) -> double
     {
       if (args.empty()) throw std::runtime_error("LIMEX: avg{} requires at least one argument");
       double result = 0.0;
@@ -1357,7 +1360,7 @@ inline void Callables<double>::initialize() {
 
   add(
     std::string("count"), 
-    [](const std::vector<double>& args)
+    [](const std::vector<double>& args) -> double
     {
       return args.size();
     }
@@ -1365,7 +1368,7 @@ inline void Callables<double>::initialize() {
 
   add(
     std::string("min"), 
-    [](const std::vector<double>& args)
+    [](const std::vector<double>& args) -> double
     {
       if (args.empty()) throw std::runtime_error("LIMEX: min{} requires at least one argument");
       double result = DBL_MAX;
@@ -1380,7 +1383,7 @@ inline void Callables<double>::initialize() {
 
   add(
     std::string("max"), 
-    [](const std::vector<double>& args)
+    [](const std::vector<double>& args) -> double
     {
       if (args.empty()) throw std::runtime_error("LIMEX: max{} requires at least one argument");
       double result = -DBL_MAX;
@@ -1395,7 +1398,7 @@ inline void Callables<double>::initialize() {
 
   add(
     std::string("element_of"), 
-    [](const std::vector<double>& args)
+    [](const std::vector<double>& args) -> double
     {
       if (args.empty()) throw std::runtime_error("LIMEX: ∈ {...} requires at least one argument");
       for ( size_t i = 1; i < args.size(); i++ ) {
@@ -1409,7 +1412,7 @@ inline void Callables<double>::initialize() {
 
   add(
     std::string("not_element_of"), 
-    [](const std::vector<double>& args)
+    [](const std::vector<double>& args) -> double
     {
       if (args.empty()) throw std::runtime_error("LIMEX: ∉ {...} requires at least one argument");
       for ( size_t i = 1; i < args.size(); i++ ) {
@@ -1421,6 +1424,13 @@ inline void Callables<double>::initialize() {
     }
   );
 
+  add(
+    std::string("at"), 
+    [](const std::vector<double>& args [[maybe_unused]]) -> double
+    {
+      throw std::runtime_error("LIMEX: at() not relevant for handle of type double");
+    }
+  );
 }
 
 } // namespace LIMEX
