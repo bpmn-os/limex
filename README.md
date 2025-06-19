@@ -130,19 +130,19 @@ You can use either the symbol or its textual alias in expressions.
 
 LIMEX includes a number of built-in functions and aggregators:
 
-| Function           | Description                                                                      |
-|--------------------|----------------------------------------------------------------------------------|
-| `abs(x)`           | Returns the absolute value of `x`.                                               |
-| `pow(x, y)`        | Computes `x` raised to the power of `y`.                                         |
-| `sqrt(x)`          | Square root of `x`.                                                              |
-| `cbrt(x)`          | Cube root of `x`.                                                                |
-| `sum{a, b, ...}`   | Returns the sum of all arguments.                                                |
-| `avg{a, b, ...}`   | Returns the average of all arguments.                                            |
-| `count{a, b, ...}` | Returns the number of arguments.                                                 |
-| `min{a, b, ...}`   | Returns the smallest value.                                                      |
-| `max{a, b, ...}`   | Returns the largest value.                                                       |
-| `x ∈ { a, b, ...}` | Returns true if `x` is in the set.                                               |
-| `x ∉ { a, b, ...}` | Returns true if `x` is not in the set.                                           |
+| Function/Aggregator |Description                                                                      |
+|---------------------|----------------------------------------------------------------------------------|
+| `abs(x)`            | Returns the absolute value of `x`.                                               |
+| `pow(x, y)`         | Computes `x` raised to the power of `y`.                                         |
+| `sqrt(x)`           | Square root of `x`.                                                              |
+| `cbrt(x)`           | Cube root of `x`.                                                                |
+| `sum{a, b, ...}`    | Returns the sum of all arguments.                                                |
+| `avg{a, b, ...}`    | Returns the average of all arguments.                                            |
+| `count{a, b, ...}`  | Returns the number of arguments.                                                 |
+| `min{a, b, ...}`    | Returns the smallest value.                                                      |
+| `max{a, b, ...}`    | Returns the largest value.                                                       |
+| `x ∈ { a, b, ...}`  | Returns true if `x` is in the set.                                               |
+| `x ∉ { a, b, ...}`  | Returns true if `x` is not in the set.                                           | 
 
 Custom function and aggregator definitions can be added.
 
