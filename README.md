@@ -116,7 +116,7 @@ LIMEX supports a wide range of operators and symbols for mathematical and logica
 
 ### Functions and aggregators
 
-Functions can be applied to on `,` separated arguments and aggregators can be used on sets.
+Functions can be applied on `,` separated arguments and aggregators can be used on sets.
 
 | Symbol | Alias   |
 |--------|---------|
