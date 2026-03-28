@@ -101,7 +101,7 @@ class Expression {
 friend class Node<T,C>;
 public:
   Expression(const std::string& expression, const Handle<T,C>& handle);
-  enum class BUILTIN { IF_THEN_ELSE, N_ARY_IF, ABS, POW, SQRT, CBRT, SUM, AVG, COUNT, MIN, MAX, ELEMENT_OF, NOT_ELEMENT_OF, AT, BUILTINS };
+  enum class BUILTIN { IF_THEN_ELSE, N_ARY_IF, ABS, POW, SQRT, CBRT, LOG, EXP, SUM, AVG, COUNT, MIN, MAX, ELEMENT_OF, NOT_ELEMENT_OF, AT, BUILTINS };
   inline const std::vector<std::string>& getVariables() const { return variables; }
   inline const std::vector<std::string>& getCollections() const { return collections; }
   inline const std::optional<std::string>& getTarget() const { return target; }
@@ -920,8 +920,8 @@ inline Token Expression<T,C>::tokenize(const std::string& input) {
       }
       else {
 //std::cerr << "IF" << startsWith(input,pos,"if") << "/" << pos << std::endl;
-        throw std::runtime_error("LIMEX: Unexpected operand at: " + input.substr(0,pos) );
-      }
+        throw std::runtime_error("LIMEX: Unexpected operand at: '" + input.substr(0,pos) + "' >>> '" + input.substr(pos) + "'" );
+       }
     }
 
     if ( expected == Token::Category::POSTFIX ) {
@@ -1330,6 +1330,24 @@ inline void Handle<double>::initialize() {
     {
       if (args.size() != 1) throw std::runtime_error("LIMEX: cbrt() requires exactly one argument");
       return std::cbrt(args[0]);
+    }
+  );
+
+  add(
+    std::string("log"), 
+    [](const std::vector<double>& args) -> double
+    {
+      if (args.size() != 1) throw std::runtime_error("LIMEX: log() requires exactly one argument");
+      return std::log(args[0]);
+    }
+  );
+
+  add(
+    std::string("exp"), 
+    [](const std::vector<double>& args) -> double
+    {
+      if (args.size() != 1) throw std::runtime_error("LIMEX: exp() requires exactly one argument");
+      return std::exp(args[0]);
     }
   );
 

@@ -96,6 +96,8 @@ void test() {
   test("cbrt(8)", std::cbrt(8)); // cbrt and function call
   test("∛(8)", std::cbrt(8)); // cbrt and symbolic name
   test("pow(2,3)", std::pow(2,3)); // function call
+  test("log(1)", std::log(1)); // function call
+  test("exp(0)", std::exp(0)); // function call
   test("sum{1,2,3}", 1+2+3); // set operation
   test("∑{1,2,3}", 1+2+3); // sum and symbolic name
   test("abs(3)", 3); // set operation

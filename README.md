@@ -136,6 +136,8 @@ LIMEX includes a number of built-in functions and aggregators:
 | `pow(x, y)`         | Computes `x` raised to the power of `y`.                                         |
 | `sqrt(x)`           | Square root of `x`.                                                              |
 | `cbrt(x)`           | Cube root of `x`.                                                                |
+| `log(x)`            | Natural logarithm of `x`.                                                        |
+| `exp(x)`            | Euler’s number *e* raised to the power of `x`.                                   |
 | `sum{a, b, ...}`    | Returns the sum of all arguments.                                                |
 | `avg{a, b, ...}`    | Returns the average of all arguments.                                            |
 | `count{a, b, ...}`  | Returns the number of arguments.                                                 |
