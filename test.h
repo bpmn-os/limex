@@ -117,6 +117,11 @@ void test() {
   test("2 not in {1,2,3}", false); // not_element_of
   test("2 ∉ {1,2,3}", false); // not_element_of
   test("4 ∉ {1,2,3}", true); // not_element_of
+// External collection membership
+  test("x in coll", { {"x", 3.0} }, { {"coll", {1.0, 2.0, 3.0}} }, true); // element_of with collection
+  test("x in coll", { {"x", 4.0} }, { {"coll", {1.0, 2.0, 3.0}} }, false); // element_of with collection
+  test("x not in coll", { {"x", 3.0} }, { {"coll", {1.0, 2.0, 3.0}} }, false); // not_element_of with collection
+  test("x not in coll", { {"x", 4.0} }, { {"coll", {1.0, 2.0, 3.0}} }, true); // not_element_of with collection
   test("true and false", false); // logical_and
   test("true && false", false); // logical_and
   test("true ∧ false", false); // logical_and
@@ -192,4 +197,25 @@ void test() {
   test("x /= 3 > 2", { {"x", 5.0} }, 5);
   test("x /= if x > 3 then 2 else 1", { {"x", 5.0} }, 2.5);
   test("x /= if x > 3 then 2 else 1", { {"x", 2.0} }, 2);
+
+// Filtered aggregations
+  test("sum{ i in coll | i > 1 }", {}, { {"coll", { -2.0, 3.0, 1.0, 5.0, 0.0 } } }, 8.0); // 3 + 5
+  test("sum{ i in coll | i >= 1 }", {}, { {"coll", { -2.0, 3.0, 1.0, 5.0, 0.0 } } }, 9.0); // 3 + 1 + 5
+  test("count{ i in coll | i > 0 }", {}, { {"coll", { -2.0, 3.0, -1.0, 5.0, 0.0 } } }, 2.0); // 3, 5
+  test("min{ i in coll | i > 0 }", {}, { {"coll", { -2.0, 3.0, -1.0, 5.0, 0.0 } } }, 3.0);
+  test("max{ i in coll | i < 0 }", {}, { {"coll", { -2.0, 3.0, -1.0, 5.0, 0.0 } } }, -1.0);
+  test("avg{ i in coll | i > 0 }", {}, { {"coll", { -2.0, 3.0, -1.0, 5.0, 0.0 } } }, 4.0); // (3 + 5) / 2
+  // Multiple conditions (AND-ed)
+  test("sum{ i in coll | i > 0, i < 5 }", {}, { {"coll", { -2.0, 3.0, -1.0, 5.0, 0.0, 2.0 } } }, 5.0); // 3 + 2
+  // With external variable
+  test("sum{ i in coll | i > x }", { {"x", 0.0} }, { {"coll", { -2.0, 3.0, -1.0, 5.0 } } }, 8.0); // 3 + 5
+  test("sum{ i in coll | i > x }", { {"x", 3.0} }, { {"coll", { -2.0, 3.0, -1.0, 5.0 } } }, 5.0); // 5
+  // Iterator reuse in different aggregations
+  test("sum{ i in coll | i > 0 } + min{ i in coll | i < 0 }", {}, { {"coll", { -2.0, 3.0, -1.0, 5.0 } } }, 6.0); // (3+5) + (-2)
+  // Nested filtered aggregations
+  test("max{ i in I | i > min{ j in J | j > 0 } }", {}, { {"I", { 1.0, 2.0, 3.0, 4.0 }}, {"J", { -1.0, 2.0, 3.0 }} }, 4.0); // min{J|j>0}=2, max{I|i>2}=4
+  test("sum{ i in I | i >= min{ j in J | j > 0 } }", {}, { {"I", { 1.0, 2.0, 3.0, 4.0 }}, {"J", { -1.0, 2.0, 3.0 }} }, 9.0); // min{J|j>0}=2, sum{I|i>=2}=2+3+4=9
+  // Collection membership in conditions
+  test("sum{ i in I | i in J }", {}, { {"I", { 1.0, 2.0, 3.0, 4.0 }}, {"J", { 2.0, 4.0, 6.0 }} }, 6.0); // 2 + 4
+  test("sum{ i in I | i not in J }", {}, { {"I", { 1.0, 2.0, 3.0, 4.0 }}, {"J", { 2.0, 4.0, 6.0 }} }, 4.0); // 1 + 3
 }

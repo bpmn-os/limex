@@ -11,6 +11,8 @@
 #include <functional>
 #include <array>
 #include <stack>
+#include <set>
+#include <ranges>
 #include <cmath>
 #include <cfloat>
 /**
@@ -76,8 +78,15 @@ public:
   inline void add(const std::string& name, std::function<T(const std::vector<T>&)> implementation);
   inline const std::vector<std::string>& getNames() const { return names; }
   inline size_t getIndex(const std::string& name) const;
-  inline T indexedEvaluation( const C& collection, const T& index ) const; 
-  inline T aggregateEvaluation( const std::string& name, const C& collection ) const; 
+  inline T indexedEvaluation( const C& collection, const T& index ) const;
+  inline T aggregateEvaluation( const std::string& name, const C& collection ) const;
+  inline T filteredAggregateEvaluation(
+    const std::string& name,
+    const C& collection,
+    const Node<T,C>& conditions,
+    const std::vector<T>& variableValues,
+    const std::vector<C>& collectionValues
+  ) const;
 private:
   inline void initialize();
   std::vector<std::function<T(const std::vector<T>&)>> implementations;
@@ -102,7 +111,11 @@ friend class Node<T,C>;
 public:
   Expression(const std::string& expression, const Handle<T,C>& handle);
   enum class BUILTIN { IF_THEN_ELSE, N_ARY_IF, ABS, POW, SQRT, CBRT, LOG, EXP, SUM, AVG, COUNT, MIN, MAX, ELEMENT_OF, NOT_ELEMENT_OF, AT, BUILTINS };
-  inline const std::vector<std::string>& getVariables() const { return variables; }
+  inline auto getVariables() const {
+    return variables | std::views::filter([this](const auto& var) {
+      return !iteratorVariables.contains(var);
+    });
+  }
   inline const std::vector<std::string>& getCollections() const { return collections; }
   inline const std::optional<std::string>& getTarget() const { return target; }
   inline T evaluate( const std::vector<T>& variableValues = {}, const std::vector<C>& collectionValues = {}) const;
@@ -113,6 +126,7 @@ private:
   const Handle<T,C>& handle;
   std::vector<std::string> variables;
   std::vector<std::string> collections;
+  std::set<std::string> iteratorVariables;
   std::optional<std::string> target;
   Node<T,C> root;
   inline Node<T,C> parse();
@@ -125,6 +139,18 @@ private:
   template <size_t N>
   inline static std::string fetch(const std::string& input, size_t start, const std::array<std::string_view, N>& prefix);
   Node<T,C> buildTree( Type type, const std::vector<Token>& tokens, std::optional<size_t> index = std::nullopt );
+  // Helper to collect variable names from tokens (skips AGGREGATION tokens for nested iterators)
+  inline static void collectVariableNames(const std::vector<Token>& tokens, std::set<std::string>& names) {
+    for (const auto& token : tokens) {
+      if (token.type == Token::Type::VARIABLE) {
+        names.insert(token.value);
+      }
+      // Skip AGGREGATION tokens - they have their own scoped iterators
+      if (token.type != Token::Type::AGGREGATION) {
+        collectVariableNames(token.children, names);
+      }
+    }
+  }
 };
 
 enum class Type {
@@ -136,6 +162,8 @@ enum class Type {
     sequence, // a block encapsulated in '[' and ']'
     function_call,  // a function call of the form '<function_name>(...)'
     aggregation, // an aggregate operation of the form '<operation_name>{...}'
+    filtered_aggregation, // a filtered aggregate operation of the form '<operation_name>{ <var> in <collection> | <conditions> }'
+    such_that, // helper for filtered aggregation, '|' separator
     index,  // an indexing operation of the form '<variable_name>[...]'
     negate,
     logical_not,
@@ -176,6 +204,8 @@ constexpr auto typeName = std::to_array<std::string_view> ({
     "sequence", // a block encapsulated in '[' and ']'
     "function_call",  // a function call of the form '<function_name>(...)'
     "aggregation", // an aggregate operation of the form '<operation_name>{...}'
+    "filtered_aggregation", // a filtered aggregate operation of the form '<operation_name>{ <var> in <collection> | <conditions> }'
+    "such_that", // helper for filtered aggregation, '|' separator
     "index",  // an indexing operation of the form '<variable_name>[...]'
     "negate",
     "logical_not",
@@ -212,7 +242,7 @@ constexpr auto keywords = std::to_array<std::string_view> ({ "false", "true" });
 constexpr auto ternary = std::to_array<std::string_view> ({ "if", "then", "else" });
 // Operator lists
 constexpr auto prefix = std::to_array<std::string_view>({ "!", "¬", "-" });
-constexpr auto infix = std::to_array<std::string_view>({ ",", "==", "!=", "<=", ">=", "<", ">", ":=", "≔", "+=", "-=", "*=", "/=", "+", "-", "*", "/", "^",  "&&", "||", "?", ":", "and", "or", "in", "not in", "≠", "≤", "≥", "∧", "∨", "∈", "∉" });
+constexpr auto infix = std::to_array<std::string_view>({ ",", "==", "!=", "<=", ">=", "<", ">", ":=", "≔", "+=", "-=", "*=", "/=", "+", "-", "*", "/", "^",  "&&", "||", "?", ":", "and", "or", "in", "not in", "≠", "≤", "≥", "∧", "∨", "∈", "∉", "|" });
 constexpr auto postfix = std::to_array<std::string_view>({ "²", "³" });
 constexpr auto symbolic_names = std::to_array<std::string_view>({ "∑", "√", "∛" });
 const std::unordered_map<std::string, std::string> aliases = {
@@ -253,6 +283,7 @@ const std::unordered_map<std::string, Type> infixTypes = {
     {"∈", Type::element_of},
     {"not in", Type::not_element_of},
     {"∉", Type::not_element_of},
+    {"|", Type::such_that},
     {std::string(ternary[1]), Type::_then_},
     {std::string(ternary[2]), Type::_else},
     {"?", Type::_then_},
@@ -306,6 +337,7 @@ const std::unordered_map<Type, unsigned int> precedences = {
     {Type::element_of, 7},
     {Type::not_element_of, 7},
 
+    {Type::such_that, 8},
     {Type::assign, 8},
     {Type::add_assign, 8},
     {Type::subtract_assign, 8},
@@ -547,6 +579,22 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const std::v
         return expression->handle.implementations[index](arguments);
       }
     }
+    case Type::filtered_aggregation:
+    {
+      size_t funcIndex = std::get<size_t>(operands[0]);
+      size_t collIndex = std::get<size_t>(operands[1]);
+      const auto& conditions = std::get<Node>(operands[2]);
+
+      const C& collection = collectionValues[collIndex];
+
+      return expression->handle.filteredAggregateEvaluation(
+        expression->handle.getNames()[funcIndex],
+        collection,
+        conditions,
+        variableValues,
+        collectionValues
+      );
+    }
     case Type::index: 
     {
       size_t collection = std::get<size_t>(operands[0]);
@@ -616,11 +664,21 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const std::v
       }
       // Collect all evaluated arguments
       std::vector<T> arguments = { std::get<Node>(operands[0]).evaluate(variableValues,collectionValues) };
-      auto& set = std::get<Node>(operands[1]);
-      for ( auto& element : set.operands ) {
-        arguments.push_back(
-          std::get<Node>(element).evaluate(variableValues,collectionValues)
-        );
+      auto& rhs = std::get<Node>(operands[1]);
+      if (rhs.type == Type::collection) {
+        // External collection reference
+        size_t collIdx = std::get<size_t>(rhs.operands[0]);
+        for (const T& elem : collectionValues[collIdx]) {
+          arguments.push_back(elem);
+        }
+      }
+      else {
+        // Inline set
+        for ( auto& element : rhs.operands ) {
+          arguments.push_back(
+            std::get<Node>(element).evaluate(variableValues,collectionValues)
+          );
+        }
       }
       // Call the custom callable
       return expression->handle.implementations[index](arguments);
@@ -632,11 +690,21 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const std::v
       }
       // Collect all evaluated arguments
       std::vector<T> arguments = { std::get<Node>(operands[0]).evaluate(variableValues,collectionValues) };
-      auto& set = std::get<Node>(operands[1]);
-      for ( auto& element : set.operands ) {
-        arguments.push_back(
-          std::get<Node>(element).evaluate(variableValues,collectionValues)
-        );
+      auto& rhs = std::get<Node>(operands[1]);
+      if (rhs.type == Type::collection) {
+        // External collection reference
+        size_t collIdx = std::get<size_t>(rhs.operands[0]);
+        for (const T& elem : collectionValues[collIdx]) {
+          arguments.push_back(elem);
+        }
+      }
+      else {
+        // Inline set
+        for ( auto& element : rhs.operands ) {
+          arguments.push_back(
+            std::get<Node>(element).evaluate(variableValues,collectionValues)
+          );
+        }
       }
       // Call the custom callable
       return expression->handle.implementations[index](arguments);
@@ -731,7 +799,8 @@ inline std::string Node<T,C>::stringify() const {
   std::string result;
 //  result += " ";
   result += std::string(typeName[(int)type]) + "( ";
-  for ( auto& operand : operands ) {
+  for ( size_t i = 0; i < operands.size(); ++i ) {
+    auto& operand = operands[i];
     if (std::holds_alternative<double>(operand)) {
       result += std::to_string(std::get<double>(operand)) + ", ";
     }
@@ -743,6 +812,10 @@ inline std::string Node<T,C>::stringify() const {
         result += expression->collections.at(std::get<size_t>(operand)) + ", ";
       }
       else if ( type == Type::index ) {
+        result += expression->collections.at(std::get<size_t>(operand)) + ", ";
+      }
+      else if ( type == Type::filtered_aggregation && i == 1 ) {
+        // operands[1] is collection index for filtered_aggregation
         result += expression->collections.at(std::get<size_t>(operand)) + ", ";
       }
       else {
@@ -876,7 +949,18 @@ inline Token Expression<T,C>::tokenize(const std::string& input) {
         }
         else {
           expected = Token::Category::POSTFIX;
-          groupStack.top().first->children.emplace_back(Token::Category::OPERAND, Token::Type::VARIABLE, name);
+          // Check if previous token was element_of/not_element_of operator - if so, this is a collection
+          auto& children = groupStack.top().first->children;
+          bool afterInOperator = !children.empty() &&
+              children.back().type == Token::Type::OPERATOR &&
+              (infixTypes.at(children.back().value) == Type::element_of ||
+               infixTypes.at(children.back().value) == Type::not_element_of);
+          if (afterInOperator) {
+            groupStack.top().first->children.emplace_back(Token::Category::OPERAND, Token::Type::COLLECTION, name);
+          }
+          else {
+            groupStack.top().first->children.emplace_back(Token::Category::OPERAND, Token::Type::VARIABLE, name);
+          }
         }
       }
       else if ( auto match = fetch(input, pos, symbolic_names); !match.empty() ) {
@@ -974,7 +1058,7 @@ inline Token Expression<T,C>::tokenize(const std::string& input) {
         expected = Token::Category::PREFIX;
         continue;
       }
-      
+
       // Consume ternary
       if ( input[pos] == '?' ) {
 //std::cerr << "TERNARY" << std::endl;
@@ -1078,7 +1162,79 @@ inline Node<T,C> Expression<T,C>::buildTree( Type type, const std::vector<Token>
       case Token::Type::FUNCTION_CALL:
         return buildTree(Type::function_call, token.children, handle.getIndex(token.value));    
       case Token::Type::AGGREGATION:
-        return buildTree(Type::aggregation, token.children, handle.getIndex(token.value));    
+      {
+        const auto& children = token.children;
+
+        // Detect filtered aggregation pattern: VAR in COLL | conditions
+        bool isFilteredAggregation = children.size() >= 4 &&
+            children[0].type == Token::Type::VARIABLE &&
+            children[1].type == Token::Type::OPERATOR && infixTypes.at(children[1].value) == Type::element_of &&
+            (children[2].type == Token::Type::VARIABLE || children[2].type == Token::Type::COLLECTION) &&
+            children[3].type == Token::Type::OPERATOR && infixTypes.at(children[3].value) == Type::such_that;
+
+        if (isFilteredAggregation) {
+          if (children.size() < 5) {
+            throw std::runtime_error("LIMEX: Filtered aggregation requires at least one condition after '|'");
+          }
+
+          std::string iteratorName = children[0].value;
+
+          // Disallow shadowing (but allow iterator reuse)
+          bool isIteratorReuse = iteratorVariables.contains(iteratorName);
+          auto inVariables = std::find(variables.begin(), variables.end(), iteratorName) != variables.end();
+          auto inCollections = std::find(collections.begin(), collections.end(), iteratorName) != collections.end();
+          if ((inVariables && !isIteratorReuse) || inCollections) {
+            throw std::runtime_error("LIMEX: Iteration variable '" + iteratorName + "' shadows existing identifier");
+          }
+
+          // Collect condition tokens (everything after '|', split by ',')
+          std::vector<std::vector<Token>> conditionTokenGroups;
+          conditionTokenGroups.emplace_back();
+          for (size_t i = 4; i < children.size(); ++i) {
+            if (children[i].type == Token::Type::SEPARATOR && children[i].value == ",") {
+              conditionTokenGroups.emplace_back();
+            }
+            else {
+              conditionTokenGroups.back().push_back(children[i]);
+            }
+          }
+
+          // Pre-scan condition tokens to collect all variable names
+          std::set<std::string> conditionVarNames;
+          for (const auto& group : conditionTokenGroups) {
+            collectVariableNames(group, conditionVarNames);
+          }
+
+          // Add external variables FIRST (all except iterator)
+          for (const auto& varName : conditionVarNames) {
+            if (varName != iteratorName) {
+              getIndex(variables, varName);
+            }
+          }
+
+          // Add iterator LAST and track it
+          getIndex(variables, iteratorName);
+          iteratorVariables.insert(iteratorName);
+
+          // Build and AND conditions together
+          Node<T,C> conditions = buildTree(Type::group, conditionTokenGroups[0]);
+          for (size_t i = 1; i < conditionTokenGroups.size(); ++i) {
+            Node<T,C> nextCondition = buildTree(Type::group, conditionTokenGroups[i]);
+            conditions = Node<T,C>(this, Type::logical_and,
+              { std::move(conditions), std::move(nextCondition) });
+          }
+
+          // DON'T erase iterator - indices must stay stable
+
+          // Build filtered_aggregation node: { funcIndex, collIndex, conditions }
+          size_t funcIdx = handle.getIndex(token.value);
+          size_t collIdx = getIndex(collections, children[2].value);
+          return Node<T,C>(this, Type::filtered_aggregation,
+            { funcIdx, collIdx, std::move(conditions) });
+        }
+
+        return buildTree(Type::aggregation, token.children, handle.getIndex(token.value));
+      }
       case Token::Type::INDEXED_VARIABLE:
         if constexpr (std::is_same_v< C, std::vector<T> >) {
           return buildTree(Type::index, token.children, getIndex(collections,token.value));
@@ -1271,6 +1427,31 @@ inline void Handle<T,C>::add(const std::string& name, std::function<T(const std:
   }
   names.push_back(name);
   implementations.emplace_back(std::move(implementation));
+}
+
+template <typename T, typename C>
+inline T Handle<T,C>::filteredAggregateEvaluation(
+  const std::string& name,
+  const C& collection,
+  const Node<T,C>& conditions,
+  const std::vector<T>& variableValues,
+  const std::vector<C>& collectionValues
+) const {
+  // Iterator index is implicitly variableValues.size()
+  size_t iteratorIndex = variableValues.size();
+
+  // Filter elements
+  C filtered;
+  std::vector<T> localVars = variableValues;
+  localVars.resize(iteratorIndex + 1);
+  for (const T& elem : collection) {
+    localVars[iteratorIndex] = elem;
+    if (conditions.evaluate(localVars, collectionValues)) {
+      filtered.push_back(elem);
+    }
+  }
+  // Apply existing aggregate implementation
+  return implementations.at(getIndex(name))(filtered);
 }
 
 // Define built-in functions
