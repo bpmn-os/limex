@@ -9,6 +9,7 @@
 #include <variant>
 #include <stdexcept>
 #include <functional>
+#include <algorithm>
 #include <array>
 #include <stack>
 #include <set>
@@ -75,9 +76,13 @@ friend class Node<T,C>;
 friend class Expression<T,C>;
 public:
   Handle() { initialize(); };
-  inline void add(const std::string& name, std::function<T(const std::vector<T>&)> implementation);
-  inline const std::vector<std::string>& getNames() const { return names; }
-  inline size_t getIndex(const std::string& name) const;
+  inline void addFunction(const std::string& name, std::function<T(const std::vector<T>&)> implementation);
+  inline void addAggregator(const std::string& name, std::function<T(const std::vector<T>&)> implementation);
+  inline bool isAggregator(const std::string& name) const;
+  inline const std::vector<std::string>& getFunctionNames() const { return functionNames; }
+  inline const std::vector<std::string>& getAggregatorNames() const { return aggregatorNames; }
+  inline size_t getFunctionIndex(const std::string& name) const;
+  inline size_t getAggregatorIndex(const std::string& name) const;
   inline T indexedEvaluation( const C& collection, const T& index ) const;
   inline T aggregateEvaluation( const std::string& name, const C& collection ) const;
   inline T filteredAggregateEvaluation(
@@ -87,10 +92,17 @@ public:
     const std::vector<T>& variableValues,
     const std::vector<C>& collectionValues
   ) const;
+  inline T membershipEvaluation(
+    const std::string& name,
+    const T& element,
+    const C& collection
+  ) const;
 private:
   inline void initialize();
-  std::vector<std::function<T(const std::vector<T>&)>> implementations;
-  std::vector<std::string> names;
+  std::vector<std::string> functionNames;
+  std::vector<std::function<T(const std::vector<T>&)>> functionImplementations;
+  std::vector<std::string> aggregatorNames;
+  std::vector<std::function<T(const std::vector<T>&)>> aggregatorImplementations;
 };
 
 /**
@@ -110,7 +122,6 @@ class Expression {
 friend class Node<T,C>;
 public:
   Expression(const std::string& expression, const Handle<T,C>& handle);
-  enum class BUILTIN { IF_THEN_ELSE, N_ARY_IF, ABS, POW, SQRT, CBRT, LOG, EXP, SUM, AVG, COUNT, MIN, MAX, ELEMENT_OF, NOT_ELEMENT_OF, AT, BUILTINS };
   inline auto getVariables() const {
     return variables | std::views::filter([this](const auto& var) {
       return !iteratorVariables.contains(var);
@@ -512,9 +523,9 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const std::v
       return value * value * value;
     }
     case Type::exponentiate: {
-      auto index = (size_t)Expression<T,C>::BUILTIN::POW;
-      if ( index >= expression->handle.getNames().size()) {
-        throw std::runtime_error("LIMEX: Callable index out of range");
+      auto index = expression->handle.getFunctionIndex("pow");
+      if (index >= expression->handle.getFunctionNames().size()) {
+        throw std::runtime_error("LIMEX: Function index out of range");
       }
       // Collect all evaluated arguments
       std::vector<T> arguments;
@@ -523,45 +534,45 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const std::v
           std::get<Node>(operands[i]).evaluate(variableValues,collectionValues)
         );
       }
-      // Call the custom callable
-      return expression->handle.implementations[index](arguments);
+      // Call pow function
+      return expression->handle.functionImplementations[index](arguments);
     }
-    case Type::function_call: 
-    case Type::aggregation: 
+    case Type::function_call:
     {
       size_t index = std::get<size_t>(operands[0]);
-      if (index >= expression->handle.getNames().size()) {
-        throw std::runtime_error("LIMEX: Callable index out of range");
+      if (index >= expression->handle.getFunctionNames().size()) {
+        throw std::runtime_error("LIMEX: Function index out of range");
       }
-      if ( index == (size_t)Expression<T,C>::BUILTIN::AT ) {
-        if constexpr (std::is_same_v< C, std::vector<T> >) {
-          throw std::logic_error("LIMEX: unexpected use of built-in 'at' for double");
-        }
-        else if constexpr (std::is_same_v< C, T >) {
-          // custom index operation
-          auto& collection = std::get<size_t>( std::get<Node>(operands[1]).operands[0] );
-          auto collectionIndex = std::get<Node>(operands[2]).evaluate(variableValues,collectionValues);
-          return expression->handle.indexedEvaluation( collectionValues[collection], collectionIndex );
-        }
-        else {
-          static_assert([]{ return false; }(), "LIMEX: unexpected collection type");
-        }
-      }          
-      else if (
-        operands.size() == 2 && 
+      // Collect all evaluated arguments
+      std::vector<T> arguments;
+      for (size_t i = 1; i < operands.size(); ++i) {
+        arguments.push_back(
+          std::get<Node>(operands[i]).evaluate(variableValues,collectionValues)
+        );
+      }
+      return expression->handle.functionImplementations[index](arguments);
+    }
+    case Type::aggregation:
+    {
+      size_t index = std::get<size_t>(operands[0]);
+      if (index >= expression->handle.getAggregatorNames().size()) {
+        throw std::runtime_error("LIMEX: Aggregator index out of range");
+      }
+      if (
+        operands.size() == 2 &&
         std::holds_alternative<Node>(operands[1]) &&
         std::get<Node>(operands[1]).type == Type::collection
       ) {
         // argument is a collection
         auto collection = std::get<size_t>(std::get<Node>(operands[1]).operands[0]);
-        
+
         if constexpr (std::is_same_v< C, std::vector<T> >) {
           // collection type C is vector<T>
-          return expression->handle.implementations[index](collectionValues[collection]);
+          return expression->handle.aggregatorImplementations[index](collectionValues[collection]);
         }
         else if constexpr (std::is_same_v< C, T >) {
           // collection type C is T
-          return expression->handle.aggregateEvaluation( expression->handle.getNames()[index], collectionValues[collection] );
+          return expression->handle.aggregateEvaluation(expression->handle.getAggregatorNames()[index], collectionValues[collection]);
         }
         else {
           static_assert([]{ return false; }(), "LIMEX: unexpected collection type");
@@ -571,24 +582,23 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const std::v
         // explicitly collect all evaluated arguments
         std::vector<T> arguments;
         for (size_t i = 1; i < operands.size(); ++i) {
-           arguments.push_back(
+          arguments.push_back(
             std::get<Node>(operands[i]).evaluate(variableValues,collectionValues)
           );
         }
-        // Call the custom callable
-        return expression->handle.implementations[index](arguments);
+        return expression->handle.aggregatorImplementations[index](arguments);
       }
     }
     case Type::filtered_aggregation:
     {
-      size_t funcIndex = std::get<size_t>(operands[0]);
+      size_t aggrIndex = std::get<size_t>(operands[0]);
       size_t collIndex = std::get<size_t>(operands[1]);
       const auto& conditions = std::get<Node>(operands[2]);
 
       const C& collection = collectionValues[collIndex];
 
       return expression->handle.filteredAggregateEvaluation(
-        expression->handle.getNames()[funcIndex],
+        expression->handle.getAggregatorNames()[aggrIndex],
         collection,
         conditions,
         variableValues,
@@ -632,9 +642,9 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const std::v
           }
           else if constexpr ( requires { std::declval<T>() == std::declval<T>(); } ) {
             // operator== is available for T and n-ary if statement can be constructed
-            auto index = (size_t)Expression<T,C>::BUILTIN::N_ARY_IF;
-            if ( index >= expression->handle.getNames().size()) {
-              throw std::runtime_error("LIMEX: Callable index out of range");
+            auto index = expression->handle.getFunctionIndex("n_ary_if");
+            if (index >= expression->handle.getFunctionNames().size()) {
+              throw std::runtime_error("LIMEX: Function index out of range");
             }
             // collect arguments for n-ary if statement
             std::vector<T> arguments;
@@ -643,7 +653,7 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const std::v
               arguments.emplace_back( collectionValues[collection][i] );
             }
             arguments.emplace_back( false ); // the else result should never occur
-            return expression->handle.implementations[index](arguments);
+            return expression->handle.functionImplementations[index](arguments);
           }
           else {
             throw std::logic_error("LIMEX: operator== is undefined");
@@ -651,68 +661,54 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const std::v
         }
       }
       else if constexpr (std::is_same_v< C, T >) {
-        throw std::logic_error("LIMEX: unexpected use of built-in 'index' for collection type");
+        // CP::Expression: call specialized indexedEvaluation()
+        auto collectionIndex = std::get<Node>(operands[1]).evaluate(variableValues, collectionValues);
+        return expression->handle.indexedEvaluation(collectionValues[collection], collectionIndex);
       }
       else {
         static_assert([]{ return false; }(), "LIMEX: unexpected collection type");
       }
     }
     case Type::element_of: {
-      auto index = (size_t)Expression<T>::BUILTIN::ELEMENT_OF;
-      if ( index >= expression->handle.getNames().size()) {
-        throw std::runtime_error("LIMEX: Callable index out of range");
-      }
-      // Collect all evaluated arguments
-      std::vector<T> arguments = { std::get<Node>(operands[0]).evaluate(variableValues,collectionValues) };
+      T element = std::get<Node>(operands[0]).evaluate(variableValues, collectionValues);
       auto& rhs = std::get<Node>(operands[1]);
       if (rhs.type == Type::collection) {
-        // External collection reference
+        // External collection reference - use membershipEvaluation
         size_t collIdx = std::get<size_t>(rhs.operands[0]);
-        for (const T& elem : collectionValues[collIdx]) {
-          arguments.push_back(elem);
-        }
+        return expression->handle.membershipEvaluation("element_of", element, collectionValues[collIdx]);
       }
       else {
-        // Inline set
-        for ( auto& element : rhs.operands ) {
-          arguments.push_back(
-            std::get<Node>(element).evaluate(variableValues,collectionValues)
-          );
+        // Inline set - collect arguments and call aggregator
+        std::vector<T> arguments = { element };
+        for (auto& elem : rhs.operands) {
+          arguments.push_back(std::get<Node>(elem).evaluate(variableValues, collectionValues));
         }
+        return expression->handle.aggregatorImplementations[
+          expression->handle.getAggregatorIndex("element_of")](arguments);
       }
-      // Call the custom callable
-      return expression->handle.implementations[index](arguments);
     }
     case Type::not_element_of: {
-      auto index = (size_t)Expression<T,C>::BUILTIN::NOT_ELEMENT_OF;
-      if ( index >= expression->handle.getNames().size()) {
-        throw std::runtime_error("LIMEX: Callable index out of range");
-      }
-      // Collect all evaluated arguments
-      std::vector<T> arguments = { std::get<Node>(operands[0]).evaluate(variableValues,collectionValues) };
+      T element = std::get<Node>(operands[0]).evaluate(variableValues, collectionValues);
       auto& rhs = std::get<Node>(operands[1]);
       if (rhs.type == Type::collection) {
-        // External collection reference
+        // External collection reference - use membershipEvaluation
         size_t collIdx = std::get<size_t>(rhs.operands[0]);
-        for (const T& elem : collectionValues[collIdx]) {
-          arguments.push_back(elem);
-        }
+        return expression->handle.membershipEvaluation("not_element_of", element, collectionValues[collIdx]);
       }
       else {
-        // Inline set
-        for ( auto& element : rhs.operands ) {
-          arguments.push_back(
-            std::get<Node>(element).evaluate(variableValues,collectionValues)
-          );
+        // Inline set - collect arguments and call aggregator
+        std::vector<T> arguments = { element };
+        for (auto& elem : rhs.operands) {
+          arguments.push_back(std::get<Node>(elem).evaluate(variableValues, collectionValues));
         }
+        return expression->handle.aggregatorImplementations[
+          expression->handle.getAggregatorIndex("not_element_of")](arguments);
       }
-      // Call the custom callable
-      return expression->handle.implementations[index](arguments);
     }
     case Type::if_then_else: {
-      auto index = (size_t)Expression<T,C>::BUILTIN::IF_THEN_ELSE;
-      if ( index >= expression->handle.getNames().size()) {
-        throw std::runtime_error("LIMEX: Callable index out of range");
+      auto index = expression->handle.getFunctionIndex("if_then_else");
+      if (index >= expression->handle.getFunctionNames().size()) {
+        throw std::runtime_error("LIMEX: Function index out of range");
       }
       // Collect all evaluated arguments
       std::vector<T> arguments;
@@ -721,8 +717,8 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const std::v
           std::get<Node>(operands[i]).evaluate(variableValues,collectionValues)
         );
       }
-      // Call the custom callable
-      return expression->handle.implementations[index](arguments);
+      // Call the function
+      return expression->handle.functionImplementations[index](arguments);
     }
     case Type::less_than:
     {
@@ -1160,7 +1156,17 @@ inline Node<T,C> Expression<T,C>::buildTree( Type type, const std::vector<Token>
       case Token::Type::SEQUENCE:
         return buildTree(Type::sequence, token.children);    
       case Token::Type::FUNCTION_CALL:
-        return buildTree(Type::function_call, token.children, handle.getIndex(token.value));    
+        if (handle.isAggregator(token.value)) {
+          // aggr(X) - aggregation over collection
+          if (token.children.size() != 1 || token.children[0].type != Token::Type::VARIABLE) {
+            throw std::runtime_error("LIMEX: Aggregator with () requires single collection");
+          }
+          size_t aggrIdx = handle.getAggregatorIndex(token.value);
+          size_t collIdx = getIndex(collections, token.children[0].value);
+          Node<T,C> collNode(this, Type::collection, std::vector<std::variant<double, size_t, Node<T,C>>>{ collIdx });
+          return Node<T,C>(this, Type::aggregation, std::vector<std::variant<double, size_t, Node<T,C>>>{ aggrIdx, std::move(collNode) });
+        }
+        return buildTree(Type::function_call, token.children, handle.getFunctionIndex(token.value));    
       case Token::Type::AGGREGATION:
       {
         const auto& children = token.children;
@@ -1226,29 +1232,17 @@ inline Node<T,C> Expression<T,C>::buildTree( Type type, const std::vector<Token>
 
           // DON'T erase iterator - indices must stay stable
 
-          // Build filtered_aggregation node: { funcIndex, collIndex, conditions }
-          size_t funcIdx = handle.getIndex(token.value);
+          // Build filtered_aggregation node: { aggrIndex, collIndex, conditions }
+          size_t aggrIdx = handle.getAggregatorIndex(token.value);
           size_t collIdx = getIndex(collections, children[2].value);
           return Node<T,C>(this, Type::filtered_aggregation,
-            { funcIdx, collIdx, std::move(conditions) });
+            { aggrIdx, collIdx, std::move(conditions) });
         }
 
-        return buildTree(Type::aggregation, token.children, handle.getIndex(token.value));
+        return buildTree(Type::aggregation, token.children, handle.getAggregatorIndex(token.value));
       }
       case Token::Type::INDEXED_VARIABLE:
-        if constexpr (std::is_same_v< C, std::vector<T> >) {
-          return buildTree(Type::index, token.children, getIndex(collections,token.value));
-        }
-        else if constexpr (std::is_same_v< C, T >) {
-          std::vector<Token> children;
-          children.emplace_back(Token::Category::OPERAND, Token::Type::COLLECTION, token.value);
-          children.emplace_back(Token::Category::INFIX, Token::Type::SEPARATOR, ",");
-          children.insert(children.end(), token.children.begin(), token.children.end());
-          return buildTree(Type::function_call, children, handle.getIndex("at"));
-        }
-        else {
-          throw std::logic_error("LIMEX:Collection type not supported");
-        }
+        return buildTree(Type::index, token.children, getIndex(collections, token.value));
       default:
         throw std::logic_error("LIMEX: Unexpected token type for operand");
     }
@@ -1411,22 +1405,52 @@ inline std::string Expression<T,C>::stringify() const {
  *******************************/
 
 template <typename T, typename C>
-inline size_t Handle<T,C>::getIndex(const std::string& name) const {
-  for ( size_t i = 0; i < names.size(); i++) {
-    if ( names[i] == name ) {
+inline size_t Handle<T,C>::getFunctionIndex(const std::string& name) const {
+  for (size_t i = 0; i < functionNames.size(); i++) {
+    if (functionNames[i] == name) {
       return i;
     }
   }
-  throw std::logic_error("LIMEX: Unknown callable '" + name + "'");
+  throw std::logic_error("LIMEX: Unknown function '" + name + "'");
 }
 
 template <typename T, typename C>
-inline void Handle<T,C>::add(const std::string& name, std::function<T(const std::vector<T>&)> implementation) {
-  if (std::ranges::find(names, name) != names.end()) {
-    throw std::runtime_error("LIMEX: Callable with name '" + name + "' already exists");
+inline size_t Handle<T,C>::getAggregatorIndex(const std::string& name) const {
+  for (size_t i = 0; i < aggregatorNames.size(); i++) {
+    if (aggregatorNames[i] == name) {
+      return i;
+    }
   }
-  names.push_back(name);
-  implementations.emplace_back(std::move(implementation));
+  throw std::logic_error("LIMEX: Unknown aggregator '" + name + "'");
+}
+
+template <typename T, typename C>
+inline bool Handle<T,C>::isAggregator(const std::string& name) const {
+  return std::ranges::contains(aggregatorNames, name);
+}
+
+template <typename T, typename C>
+inline void Handle<T,C>::addFunction(const std::string& name, std::function<T(const std::vector<T>&)> implementation) {
+  if (std::ranges::contains(functionNames, name)) {
+    throw std::runtime_error("LIMEX: Function '" + name + "' already exists");
+  }
+  if (std::ranges::contains(aggregatorNames, name)) {
+    throw std::runtime_error("LIMEX: '" + name + "' is already registered as aggregator");
+  }
+  functionNames.push_back(name);
+  functionImplementations.emplace_back(std::move(implementation));
+}
+
+template <typename T, typename C>
+inline void Handle<T,C>::addAggregator(const std::string& name, std::function<T(const std::vector<T>&)> implementation) {
+  if (std::ranges::contains(aggregatorNames, name)) {
+    throw std::runtime_error("LIMEX: Aggregator '" + name + "' already exists");
+  }
+  if (std::ranges::contains(functionNames, name)) {
+    throw std::runtime_error("LIMEX: '" + name + "' is already registered as function");
+  }
+  aggregatorNames.push_back(name);
+  aggregatorImplementations.emplace_back(std::move(implementation));
 }
 
 template <typename T, typename C>
@@ -1451,14 +1475,28 @@ inline T Handle<T,C>::filteredAggregateEvaluation(
     }
   }
   // Apply existing aggregate implementation
-  return implementations.at(getIndex(name))(filtered);
+  return aggregatorImplementations.at(getAggregatorIndex(name))(filtered);
+}
+
+template <typename T, typename C>
+inline T Handle<T,C>::membershipEvaluation(
+  const std::string& name,
+  const T& element,
+  const C& collection
+) const {
+  std::vector<T> args = { element };
+  for (const T& elem : collection) {
+    args.push_back(elem);
+  }
+  return aggregatorImplementations.at(getAggregatorIndex(name))(args);
 }
 
 // Define built-in functions
 template <>
 inline void Handle<double>::initialize() {
-  add(
-    std::string("if_then_else"), 
+  // Functions
+  addFunction(
+    std::string("if_then_else"),
     [](const std::vector<double>& args) -> double
     {
       if (args.size() != 3) throw std::runtime_error("LIMEX: if_then_else() requires exactly two arguments");
@@ -1466,8 +1504,8 @@ inline void Handle<double>::initialize() {
     }
   );
 
-  add(
-    std::string("n_ary_if"), 
+  addFunction(
+    std::string("n_ary_if"),
     [](const std::vector<double>& args) -> double
     {
       if (args.empty() || args.size()%2 != 1) throw std::runtime_error("LIMEX: n_ary_if() requires an unconditional argument");
@@ -1478,8 +1516,8 @@ inline void Handle<double>::initialize() {
     }
   );
 
-  add(
-    std::string("abs"), 
+  addFunction(
+    std::string("abs"),
     [](const std::vector<double>& args) -> double
     {
       if (args.size() != 1) throw std::runtime_error("LIMEX: abs() requires exactly one argument");
@@ -1487,8 +1525,8 @@ inline void Handle<double>::initialize() {
     }
   );
 
-  add(
-    std::string("pow"), 
+  addFunction(
+    std::string("pow"),
     [](const std::vector<double>& args) -> double
     {
       if (args.size() != 2) throw std::runtime_error("LIMEX: pow() requires exactly two arguments");
@@ -1496,8 +1534,8 @@ inline void Handle<double>::initialize() {
     }
   );
 
-  add(
-    std::string("sqrt"), 
+  addFunction(
+    std::string("sqrt"),
     [](const std::vector<double>& args) -> double
     {
       if (args.size() != 1) throw std::runtime_error("LIMEX: sqrt() requires exactly one argument");
@@ -1505,8 +1543,8 @@ inline void Handle<double>::initialize() {
     }
   );
 
-  add(
-    std::string("cbrt"), 
+  addFunction(
+    std::string("cbrt"),
     [](const std::vector<double>& args) -> double
     {
       if (args.size() != 1) throw std::runtime_error("LIMEX: cbrt() requires exactly one argument");
@@ -1514,8 +1552,8 @@ inline void Handle<double>::initialize() {
     }
   );
 
-  add(
-    std::string("log"), 
+  addFunction(
+    std::string("log"),
     [](const std::vector<double>& args) -> double
     {
       if (args.size() != 1) throw std::runtime_error("LIMEX: log() requires exactly one argument");
@@ -1523,8 +1561,8 @@ inline void Handle<double>::initialize() {
     }
   );
 
-  add(
-    std::string("exp"), 
+  addFunction(
+    std::string("exp"),
     [](const std::vector<double>& args) -> double
     {
       if (args.size() != 1) throw std::runtime_error("LIMEX: exp() requires exactly one argument");
@@ -1532,8 +1570,17 @@ inline void Handle<double>::initialize() {
     }
   );
 
-  add(
-    std::string("sum"), 
+  addFunction(
+    std::string("at"),
+    [](const std::vector<double>& args [[maybe_unused]]) -> double
+    {
+      throw std::runtime_error("LIMEX: at() not relevant for handle of type double");
+    }
+  );
+
+  // Aggregators
+  addAggregator(
+    std::string("sum"),
     [](const std::vector<double>& args) -> double
     {
       double result = 0.0;
@@ -1544,8 +1591,8 @@ inline void Handle<double>::initialize() {
     }
   );
 
-  add(
-    std::string("avg"), 
+  addAggregator(
+    std::string("avg"),
     [](const std::vector<double>& args) -> double
     {
       if (args.empty()) throw std::runtime_error("LIMEX: avg{} requires at least one argument");
@@ -1557,16 +1604,16 @@ inline void Handle<double>::initialize() {
     }
   );
 
-  add(
-    std::string("count"), 
+  addAggregator(
+    std::string("count"),
     [](const std::vector<double>& args) -> double
     {
       return args.size();
     }
   );
 
-  add(
-    std::string("min"), 
+  addAggregator(
+    std::string("min"),
     [](const std::vector<double>& args) -> double
     {
       if (args.empty()) throw std::runtime_error("LIMEX: min{} requires at least one argument");
@@ -1580,8 +1627,8 @@ inline void Handle<double>::initialize() {
     }
   );
 
-  add(
-    std::string("max"), 
+  addAggregator(
+    std::string("max"),
     [](const std::vector<double>& args) -> double
     {
       if (args.empty()) throw std::runtime_error("LIMEX: max{} requires at least one argument");
@@ -1595,8 +1642,8 @@ inline void Handle<double>::initialize() {
     }
   );
 
-  add(
-    std::string("element_of"), 
+  addAggregator(
+    std::string("element_of"),
     [](const std::vector<double>& args) -> double
     {
       if (args.empty()) throw std::runtime_error("LIMEX: ∈ {...} requires at least one argument");
@@ -1609,8 +1656,8 @@ inline void Handle<double>::initialize() {
     }
   );
 
-  add(
-    std::string("not_element_of"), 
+  addAggregator(
+    std::string("not_element_of"),
     [](const std::vector<double>& args) -> double
     {
       if (args.empty()) throw std::runtime_error("LIMEX: ∉ {...} requires at least one argument");
@@ -1620,14 +1667,6 @@ inline void Handle<double>::initialize() {
         }
       }
       return true;
-    }
-  );
-
-  add(
-    std::string("at"), 
-    [](const std::vector<double>& args [[maybe_unused]]) -> double
-    {
-      throw std::runtime_error("LIMEX: at() not relevant for handle of type double");
     }
   );
 }
