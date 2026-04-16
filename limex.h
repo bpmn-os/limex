@@ -814,8 +814,14 @@ inline std::string Node<T,C>::stringify() const {
         // operands[1] is collection index for filtered_aggregation
         result += expression->collections.at(std::get<size_t>(operand)) + ", ";
       }
+      else if ( type == Type::function_call ) {
+        result += expression->handle.getFunctionNames().at(std::get<size_t>(operand)) + ", ";
+      }
+      else if ( type == Type::aggregation || type == Type::filtered_aggregation ) {
+        result += expression->handle.getAggregatorNames().at(std::get<size_t>(operand)) + ", ";
+      }
       else {
-        result += expression->handle.names.at(std::get<size_t>(operand)) + ", ";
+        throw std::logic_error("LIMEX: Unexpected size_t operand in stringify for type '" + std::string(typeName[(int)type]) + "'");
       }
     }
     else if (std::holds_alternative< Node<T,C> >(operand)) {
@@ -948,6 +954,7 @@ inline Token Expression<T,C>::tokenize(const std::string& input) {
           // Check if previous token was element_of/not_element_of operator - if so, this is a collection
           auto& children = groupStack.top().first->children;
           bool afterInOperator = !children.empty() &&
+              children.back().category == Token::Category::INFIX &&
               children.back().type == Token::Type::OPERATOR &&
               (infixTypes.at(children.back().value) == Type::element_of ||
                infixTypes.at(children.back().value) == Type::not_element_of);
