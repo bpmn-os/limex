@@ -6,11 +6,22 @@ constexpr const char* RESET_COLOR = "\033[0m";
 constexpr const char* GREEN_COLOR = "\033[32m";
 constexpr const char* RED_COLOR   = "\033[31m";
 
+void testParseError( std::string input ) {
+  LIMEX::Handle<double> handle;
+  try {
+    LIMEX::Expression<double> expression(input,handle);
+    std::cerr << "Parse: " << input << " [fail, expected error]" << RESET_COLOR << std::endl;
+  }
+  catch (const std::exception& e) {
+    std::cerr << "Parse: " << input << " (" << e.what() << ")" << GREEN_COLOR << " [pass]" << RESET_COLOR << std::endl;
+  }
+}
+
 void test( std::string input,  double result ) {
   LIMEX::Handle<double> handle;
   try {
     LIMEX::Expression<double> expression(input,handle);
-    std::cerr << input << " = " << expression.evaluate() ;
+    std::cerr << input << " = " << expression.evaluate();
     if (expression.evaluate() == result) {
       std::cerr << GREEN_COLOR << " [pass]" << RESET_COLOR << std::endl;
     }
@@ -106,6 +117,8 @@ void test() {
   test("count{1,2,3}", 3); // set operation
   test("min{1,2,3}", 1); // set operation
   test("max{1,2,3}", 3); // set operation
+  test("sum{x, y, z}", { {"x", 1.0}, {"y", 2.0}, {"z", 3.0} }, 6.0); // set with variables
+  testParseError("sum(a, b, c)"); // aggregator with () requires single collection
   test("5*4²", 5*4*4); // postfix and infix
   test("!2³", !std::pow(2,3)); // prefix and postfix
   test("-2³ * 2", -std::pow(2,3) * 2 ); // prefix, postfix and infix
@@ -117,6 +130,11 @@ void test() {
   test("2 not in {1,2,3}", false); // not_element_of
   test("2 ∉ {1,2,3}", false); // not_element_of
   test("4 ∉ {1,2,3}", true); // not_element_of
+// External collection membership
+  test("x in coll", { {"x", 3.0} }, { {"I", {1.0, 2.0, 3.0}} }, true); // element_of with collection
+  test("x in coll", { {"x", 4.0} }, { {"I", {1.0, 2.0, 3.0}} }, false); // element_of with collection
+  test("x not in coll", { {"x", 3.0} }, { {"I", {1.0, 2.0, 3.0}} }, false); // not_element_of with collection
+  test("x not in coll", { {"x", 4.0} }, { {"I", {1.0, 2.0, 3.0}} }, true); // not_element_of with collection
   test("true and false", false); // logical_and
   test("true && false", false); // logical_and
   test("true ∧ false", false); // logical_and
@@ -177,10 +195,13 @@ void test() {
   test("x - y + z", { {"z", 2.0}, {"x", 3.0}, {"y", 5.0} }, 3 - 5 + 2); 
 
 // Collections
-  test("x[2]", {}, { {"x", { 2.0, 5.0, 3.0} } }, 5.0); 
+  test("x[2]", {}, { {"x", { 2.0, 5.0, 3.0} } }, 5.0);
   test("y + x[5-2]", { {"y", 5.0} }, { {"x", { 2.0, 5.0, 3.0} } }, 8.0);
-  test("sum{collection[]}", {}, { {"collection", { 2.0, 5.0, 3.0} } }, 10.0); 
-  test("count(collection[])", {}, { {"collection", { 2.0, 5.0, 3.0} } }, 3); 
+  test("sum(X)", {}, { {"X", { 2.0, 5.0, 3.0} } }, 10.0);
+  test("count(X)", {}, { {"X", { 2.0, 5.0, 3.0} } }, 3);
+  test("min(X)", {}, { {"X", {3.0, 1.0, 2.0}} }, 1.0);
+  test("max(X)", {}, { {"X", {3.0, 1.0, 2.0}} }, 3.0);
+  test("avg(X)", {}, { {"X", {1.0, 2.0, 3.0}} }, 2.0); 
 
 // Assignments
   test("x := 3", 3);
@@ -192,4 +213,25 @@ void test() {
   test("x /= 3 > 2", { {"x", 5.0} }, 5);
   test("x /= if x > 3 then 2 else 1", { {"x", 5.0} }, 2.5);
   test("x /= if x > 3 then 2 else 1", { {"x", 2.0} }, 2);
+
+// Filtered aggregations
+  test("sum{ i in I | i > 1 }", {}, { {"I", { -2.0, 3.0, 1.0, 5.0, 0.0 } } }, 8.0); // 3 + 5
+  test("sum{ i in I | i >= 1 }", {}, { {"I", { -2.0, 3.0, 1.0, 5.0, 0.0 } } }, 9.0); // 3 + 1 + 5
+  test("count{ i in I | i > 0 }", {}, { {"I", { -2.0, 3.0, -1.0, 5.0, 0.0 } } }, 2.0); // 3, 5
+  test("min{ i in I | i > 0 }", {}, { {"I", { -2.0, 3.0, -1.0, 5.0, 0.0 } } }, 3.0);
+  test("max{ i in I | i < 0 }", {}, { {"I", { -2.0, 3.0, -1.0, 5.0, 0.0 } } }, -1.0);
+  test("avg{ i in I | i > 0 }", {}, { {"I", { -2.0, 3.0, -1.0, 5.0, 0.0 } } }, 4.0); // (3 + 5) / 2
+  // Multiple conditions (AND-ed)
+  test("sum{ i in I | i > 0, i < 5 }", {}, { {"I", { -2.0, 3.0, -1.0, 5.0, 0.0, 2.0 } } }, 5.0); // 3 + 2
+  // With external variable
+  test("sum{ i in I | i > x }", { {"x", 0.0} }, { {"I", { -2.0, 3.0, -1.0, 5.0 } } }, 8.0); // 3 + 5
+  test("sum{ i in I | i > x }", { {"x", 3.0} }, { {"I", { -2.0, 3.0, -1.0, 5.0 } } }, 5.0); // 5
+  // Iterator reuse in different aggregations
+  test("sum{ i in I | i > 0 } + min{ i in I | i < 0 }", {}, { {"I", { -2.0, 3.0, -1.0, 5.0 } } }, 6.0); // (3+5) + (-2)
+  // Nested filtered aggregations
+  test("max{ i in I | i > min{ j in J | j > 0 } }", {}, { {"I", { 1.0, 2.0, 3.0, 4.0 }}, {"J", { -1.0, 2.0, 3.0 }} }, 4.0); // min{J|j>0}=2, max{I|i>2}=4
+  test("sum{ i in I | i >= min{ j in J | j > 0 } }", {}, { {"I", { 1.0, 2.0, 3.0, 4.0 }}, {"J", { -1.0, 2.0, 3.0 }} }, 9.0); // min{J|j>0}=2, sum{I|i>=2}=2+3+4=9
+  // Collection membership in conditions
+  test("sum{ i in I | i in J }", {}, { {"I", { 1.0, 2.0, 3.0, 4.0 }}, {"J", { 2.0, 4.0, 6.0 }} }, 6.0); // 2 + 4
+  test("sum{ i in I | i not in J }", {}, { {"I", { 1.0, 2.0, 3.0, 4.0 }}, {"J", { 2.0, 4.0, 6.0 }} }, 4.0); // 1 + 3
 }

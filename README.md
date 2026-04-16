@@ -137,14 +137,21 @@ LIMEX includes a number of built-in functions and aggregators:
 | `sqrt(x)`           | Square root of `x`.                                                              |
 | `cbrt(x)`           | Cube root of `x`.                                                                |
 | `log(x)`            | Natural logarithm of `x`.                                                        |
-| `exp(x)`            | Euler’s number *e* raised to the power of `x`.                                   |
+| `exp(x)`            | Euler's number *e* raised to the power of `x`.                                   |
 | `sum{a, b, ...}`    | Returns the sum of all arguments.                                                |
 | `avg{a, b, ...}`    | Returns the average of all arguments.                                            |
 | `count{a, b, ...}`  | Returns the number of arguments.                                                 |
 | `min{a, b, ...}`    | Returns the smallest value.                                                      |
 | `max{a, b, ...}`    | Returns the largest value.                                                       |
+| `sum{ i in X \| i >= a, ... }` | Returns the sum of elements in `X` satisfying conditions.                     |
+| `avg{ i in X \| i >= a, ... }` | Returns the average of elements in `X` satisfying conditions.                 |
+| `count{ i in X \| i >= a, ... }` | Returns the count of elements in `X` satisfying conditions.                 |
+| `min{ i in X \| i >= a, ... }` | Returns the minimum of elements in `X` satisfying conditions.                 |
+| `max{ i in X \| i >= a, ... }` | Returns the maximum of elements in `X` satisfying conditions.                 |
 | `x ∈ { a, b, ...}`  | Returns true if `x` is in the set.                                               |
-| `x ∉ { a, b, ...}`  | Returns true if `x` is not in the set.                                           | 
+| `x ∉ { a, b, ...}`  | Returns true if `x` is not in the set.                                           |
+| `x in X`            | Returns true if `x` is in the collection `X`.                                    |
+| `x not in X`        | Returns true if `x` is not in the collection `X`.                                |
 
 Custom function and aggregator definitions can be added.
 
