@@ -1178,18 +1178,14 @@ inline Node<T,C> Expression<T,C>::buildTree( Type type, const std::vector<Token>
       {
         const auto& children = token.children;
 
-        // Detect filtered aggregation pattern: VAR in COLL | conditions
-        bool isFilteredAggregation = children.size() >= 4 &&
-            children[0].type == Token::Type::VARIABLE &&
-            children[1].type == Token::Type::OPERATOR && infixTypes.at(children[1].value) == Type::element_of &&
-            (children[2].type == Token::Type::VARIABLE || children[2].type == Token::Type::COLLECTION) &&
-            children[3].type == Token::Type::OPERATOR && infixTypes.at(children[3].value) == Type::such_that;
-
-        if (isFilteredAggregation) {
-          if (children.size() < 5) {
-            throw std::runtime_error("LIMEX: Filtered aggregation requires at least one condition after '|'");
-          }
-
+        // Detect filtered aggregation pattern: '<var> in <collection> |'
+        if ( 
+          children.size() >= 5 &&
+          children[0].type == Token::Type::VARIABLE &&
+          children[1].type == Token::Type::OPERATOR && infixTypes.at(children[1].value) == Type::element_of &&
+          children[2].type == Token::Type::COLLECTION &&
+          children[3].type == Token::Type::OPERATOR && infixTypes.at(children[3].value) == Type::such_that
+        ) {
           std::string iteratorName = children[0].value;
 
           // Disallow shadowing (but allow iterator reuse)
@@ -1244,6 +1240,13 @@ inline Node<T,C> Expression<T,C>::buildTree( Type type, const std::vector<Token>
           size_t collIdx = getIndex(collections, children[2].value);
           return Node<T,C>(this, Type::filtered_aggregation,
             { aggrIdx, collIdx, std::move(conditions) });
+        }
+
+        // Check if '|' (such_that) is used but filtered aggregation pattern wasn't matched
+        for (const auto& child : children) {
+          if (child.type == Token::Type::OPERATOR && infixTypes.count(child.value) && infixTypes.at(child.value) == Type::such_that) {
+            throw std::runtime_error("LIMEX: Filtered aggregation requires syntax: aggr{ var in collection | conditions }");
+          }
         }
 
         return buildTree(Type::aggregation, token.children, handle.getAggregatorIndex(token.value));

@@ -10,10 +10,10 @@ void testParseError( std::string input ) {
   LIMEX::Handle<double> handle;
   try {
     LIMEX::Expression<double> expression(input,handle);
-    std::cerr << "Parse: " << input << " [fail, expected error]" << RESET_COLOR << std::endl;
+    std::cerr << "Parse '" << input << "' succeeded" << RED_COLOR << " [fail, expected error]" << RESET_COLOR << std::endl;
   }
   catch (const std::exception& e) {
-    std::cerr << "Parse: " << input << " (" << e.what() << ")" << GREEN_COLOR << " [pass]" << RESET_COLOR << std::endl;
+    std::cerr << "Parse '" << input << "' fails: " << e.what() << GREEN_COLOR << " [pass]" << RESET_COLOR << std::endl;
   }
 }
 
@@ -131,10 +131,10 @@ void test() {
   test("2 ∉ {1,2,3}", false); // not_element_of
   test("4 ∉ {1,2,3}", true); // not_element_of
 // External collection membership
-  test("x in coll", { {"x", 3.0} }, { {"I", {1.0, 2.0, 3.0}} }, true); // element_of with collection
-  test("x in coll", { {"x", 4.0} }, { {"I", {1.0, 2.0, 3.0}} }, false); // element_of with collection
-  test("x not in coll", { {"x", 3.0} }, { {"I", {1.0, 2.0, 3.0}} }, false); // not_element_of with collection
-  test("x not in coll", { {"x", 4.0} }, { {"I", {1.0, 2.0, 3.0}} }, true); // not_element_of with collection
+  test("x in X", { {"x", 3.0} }, { {"X", {1.0, 2.0, 3.0}} }, true); // element_of with collection
+  test("x in X", { {"x", 4.0} }, { {"X", {1.0, 2.0, 3.0}} }, false); // element_of with collection
+  test("x not in X", { {"x", 3.0} }, { {"X", {1.0, 2.0, 3.0}} }, false); // not_element_of with collection
+  test("x not in X", { {"x", 4.0} }, { {"X", {1.0, 2.0, 3.0}} }, true); // not_element_of with collection
   test("true and false", false); // logical_and
   test("true && false", false); // logical_and
   test("true ∧ false", false); // logical_and
@@ -235,4 +235,7 @@ void test() {
   // Collection membership in conditions
   test("sum{ i in I | i in J }", {}, { {"I", { 1.0, 2.0, 3.0, 4.0 }}, {"J", { 2.0, 4.0, 6.0 }} }, 6.0); // 2 + 4
   test("sum{ i in I | i not in J }", {}, { {"I", { 1.0, 2.0, 3.0, 4.0 }}, {"J", { 2.0, 4.0, 6.0 }} }, 4.0); // 1 + 3
+
+  // Function call requires collection and fails if function_call is used
+  testParseError("min{ d in sqrt(x) | d >= 0 }");
 }
