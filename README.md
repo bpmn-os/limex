@@ -63,8 +63,12 @@ for ( size_t path = 0; path < expression.getPaths().size(); path++ ) {
 } 
 
 // Pass each array as a view of the values held above
-LIMEX::Resolver<double> resolver;
-resolver.collection = [&](size_t path, const std::vector<double>&) { return LIMEX::View<double>( arrays[path] ); };
+struct ArrayResolver : LIMEX::Resolver<double> {
+  const std::vector< std::vector<double> >& arrays;
+  ArrayResolver(const std::vector< std::vector<double> >& arrays) : arrays(arrays) {}
+  double value(size_t, const std::vector<double>&) const override { throw std::runtime_error("no values"); }
+  LIMEX::View<double> array(size_t path, const std::vector<double>&) const override { return LIMEX::View<double>( arrays[path] ); }
+} resolver(arrays);
 
 // Evaluate expression with given values
 std::cout << "Result: " << expression.evaluate(variableValues,resolver) << std::endl;
@@ -92,21 +96,29 @@ A name followed by indices and fields, `name ( .field | [expression] )*`, is an 
 `sum(a)`, `x in a` or `d in a`, is a path without steps, which may also be written `a[]`. LIMEX knows nothing of the
 values a path addresses: it evaluates the index expressions and asks the caller to resolve the path. The paths
 of an expression are listed by `getPaths()`, each with its name and its steps, a step being a field name or,
-for an index, `std::nullopt`. The caller passes a `LIMEX::Resolver<T>` with two callbacks, each receiving the
-position of the path in `getPaths()` and the values of its indices in order: `value` returns the value a path
-addresses, and `collection` returns the array it addresses as a view. A path is resolved as an array where an
-array is expected, namely as the argument of an aggregator (`sum(facilities[i].flags)`), on the right of `in`
-and in a binding of an aggregation, and as a value everywhere else. The indices are passed as they are
+for an index, `std::nullopt`. The caller implements the interface `LIMEX::Resolver<T>`, whose two methods each
+receive the position of the path in `getPaths()` and the values of its indices in order: `value` returns the
+value a path addresses, and `array` returns the array it addresses as a view. A path is resolved as an array
+where an array is expected, namely as the argument of an aggregator (`sum(facilities[i].flags)`), on the right
+of `in` and in a binding of an aggregation, and as a value everywhere else. The indices are passed as they are
 evaluated, so that their numbering, conventionally from one, and their bounds are the caller's to check.
 
+The resolver is passed to `evaluate` and `evaluateTargetIndices` by reference, and is typically an object of the
+caller's class constructed on the stack for the evaluation, so that resolving allocates nothing. An expression
+without paths is evaluated without a resolver; a path met in an evaluation without one is an error.
+
 ```cpp
+// resolves the only path, a[i], with a single index counting from one
+struct Resolver : LIMEX::Resolver<double> {
+  const std::vector<double>& a;
+  Resolver(const std::vector<double>& a) : a(a) {}
+  double value(size_t, const std::vector<double>& indices) const override { return a.at( (size_t)indices[0] - 1 ); }
+  LIMEX::View<double> array(size_t, const std::vector<double>&) const override { return LIMEX::View<double>( a ); }
+};
+
 LIMEX::Expression<double> expression("x + a[i]", handle);
 std::vector<double> a = { 2.0, 5.0, 3.0 };
-LIMEX::Resolver<double> resolver;
-resolver.value = [&](size_t path, const std::vector<double>& indices) {
-  // the only path is a[i], with a single index counting from one
-  return a.at( (size_t)indices[0] - 1 );
-};
+Resolver resolver(a);
 std::cout << expression.evaluate( { 1.0, 2.0 }, resolver ) << std::endl; // x = 1, i = 2: prints 6
 ```
 

@@ -46,10 +46,17 @@ int main()
       arrays[path].push_back( std::stod(value) );
     }
   }
-  LIMEX::Resolver<double> resolver;
-  resolver.collection = [&arrays](size_t path, const std::vector<double>&) -> LIMEX::View<double> {
-    return LIMEX::View<double>( arrays[path] );
-  };
+  // each array is passed as a view of the values held above
+  struct ArrayResolver : LIMEX::Resolver<double> {
+    const std::vector< std::vector<double> >& arrays;
+    ArrayResolver(const std::vector< std::vector<double> >& arrays) : arrays(arrays) {}
+    double value(size_t, const std::vector<double>&) const override {
+      throw std::runtime_error("only arrays are supported");
+    }
+    LIMEX::View<double> array(size_t path, const std::vector<double>&) const override {
+      return LIMEX::View<double>( arrays[path] );
+    }
+  } resolver(arrays);
 
   // Evaluate expression with given values
   std::cout << "Result: " << expression.evaluate(variableValues,resolver) << std::endl;

@@ -8,6 +8,31 @@ constexpr const char* RESET_COLOR = "\033[0m";
 constexpr const char* GREEN_COLOR = "\033[32m";
 constexpr const char* RED_COLOR   = "\033[31m";
 
+// Resolves the paths of an expression in a map of arrays: a path without steps names an array of the map, which
+// is passed as a view of the vector held by the map, which outlives the evaluation, and a path of one index
+// addresses an element of an array of the map, counting from one.
+class MapResolver : public LIMEX::Resolver<double> {
+public:
+  MapResolver(const LIMEX::Expression<double>& expression, const std::map<std::string,std::vector<double>>& arrays) : expression(expression), arrays(arrays) {}
+  double value(size_t path, const std::vector<double>& indices) const override {
+    const auto& description = expression.getPaths().at(path);
+    if ( description.steps.size() != 1 || description.steps[0].has_value() ) {
+      throw std::runtime_error("unsupported path '" + description.name + "'");
+    }
+    const auto& values = arrays.at(description.name);
+    if ( indices[0] < 1 || indices[0] > (double)values.size() ) {
+      throw std::runtime_error("illegal index for '" + description.name + "'");
+    }
+    return values[(size_t)indices[0] - 1];
+  }
+  LIMEX::View<double> array(size_t path, const std::vector<double>&) const override {
+    return LIMEX::View<double>( arrays.at(expression.getPaths().at(path).name) );
+  }
+private:
+  const LIMEX::Expression<double>& expression;
+  const std::map<std::string,std::vector<double>>& arrays;
+};
+
 void testParseError( std::string input ) {
   LIMEX::Handle<double> handle;
   try {
@@ -60,7 +85,7 @@ void test( std::string input, std::map<std::string,double> valueMap, double resu
   }
 }
 
-void test( std::string input, std::map<std::string,double> valueMap, std::map<std::string,std::vector<double>> collectionMap, double result ) {
+void test( std::string input, std::map<std::string,double> valueMap, std::map<std::string,std::vector<double>> arrayMap, double result ) {
   LIMEX::Handle<double> handle;
   try {
     LIMEX::Expression<double> expression(input,handle);
@@ -69,34 +94,17 @@ void test( std::string input, std::map<std::string,double> valueMap, std::map<st
       std::cerr << variable << " = " << valueMap.at(variable) << " ";    
       variableValues.push_back( valueMap.at(variable) );
     }
-    // a path without steps names an array of the map, which is passed as a view of the vector held by the
-    // map, which outlives the evaluation
     for ( auto& description : expression.getPaths() ) {
       if ( description.steps.empty() ) {
         std::cerr << description.name << " = [";
-        for ( auto value : collectionMap.at(description.name) ) {
+        for ( auto value : arrayMap.at(description.name) ) {
           std::cerr << value << ", ";
         }
         std::cerr << "] ";
       }
     }
 
-    // a path of one index addresses an element of an array of the map, counting from one
-    LIMEX::Resolver<double> resolver;
-    resolver.collection = [&](size_t path, const std::vector<double>&) -> LIMEX::View<double> {
-      return LIMEX::View<double>( collectionMap.at(expression.getPaths().at(path).name) );
-    };
-    resolver.value = [&](size_t path, const std::vector<double>& indices) -> double {
-      const auto& description = expression.getPaths().at(path);
-      if ( description.steps.size() != 1 || description.steps[0].has_value() ) {
-        throw std::runtime_error("unsupported path '" + description.name + "'");
-      }
-      const auto& values = collectionMap.at(description.name);
-      if ( indices[0] < 1 || indices[0] > (double)values.size() ) {
-        throw std::runtime_error("illegal index for '" + description.name + "'");
-      }
-      return values[(size_t)indices[0] - 1];
-    };
+    MapResolver resolver(expression, arrayMap);
 
     std::cerr << "implies " << input << " = " << expression.evaluate(variableValues,resolver) ;
     if (expression.evaluate(variableValues,resolver) == result) {
@@ -112,6 +120,25 @@ void test( std::string input, std::map<std::string,double> valueMap, std::map<st
   }
 }
 
+// Resolves the paths of an expression whose only array `X` is a computed view: a path without steps names X,
+// and a path of one index addresses an element of X.
+class ComputedResolver : public LIMEX::Resolver<double> {
+public:
+  ComputedResolver(const LIMEX::Expression<double>& expression, const LIMEX::View<double>& computed) : expression(expression), computed(computed) {}
+  double value(size_t, const std::vector<double>& indices) const override {
+    return computed[(size_t)indices[0] - 1];
+  }
+  LIMEX::View<double> array(size_t path, const std::vector<double>&) const override {
+    if ( expression.getPaths().at(path).name != "X" ) {
+      throw std::runtime_error("unexpected array '" + expression.getPaths().at(path).name + "'");
+    }
+    return computed;
+  }
+private:
+  const LIMEX::Expression<double>& expression;
+  const LIMEX::View<double>& computed;
+};
+
 // Evaluates an expression whose only array `X` is a computed view of `size` values, the value at
 // position k being 2 * (k + 1), so that X = [2, 4, 6, ...] without being stored.
 void testComputed( std::string input, size_t size, double result ) {
@@ -119,17 +146,7 @@ void testComputed( std::string input, size_t size, double result ) {
   try {
     LIMEX::Expression<double> expression(input,handle);
     LIMEX::View<double> computed( size, [](size_t k) { return 2.0 * (double)(k + 1); } );
-    // a path without steps names X, and a path of one index addresses an element of X
-    LIMEX::Resolver<double> resolver;
-    resolver.collection = [&](size_t path, const std::vector<double>&) -> LIMEX::View<double> {
-      if ( expression.getPaths().at(path).name != "X" ) {
-        throw std::runtime_error("unexpected array '" + expression.getPaths().at(path).name + "'");
-      }
-      return computed;
-    };
-    resolver.value = [&](size_t path [[maybe_unused]], const std::vector<double>& indices) -> double {
-      return computed[(size_t)indices[0] - 1];
-    };
+    ComputedResolver resolver(expression, computed);
     std::cerr << "X computed with " << size << " values implies " << input << " = " << expression.evaluate({},resolver);
     if (expression.evaluate({},resolver) == result) {
       std::cerr << GREEN_COLOR << " [pass]" << RESET_COLOR << std::endl;
@@ -145,7 +162,7 @@ void testComputed( std::string input, size_t size, double result ) {
 }
 
 // Evaluates an expression with a custom aggregator `second`, returning the second value of a view.
-void testCustomAggregator( std::string input, std::map<std::string,std::vector<double>> collectionMap, double result ) {
+void testCustomAggregator( std::string input, std::map<std::string,std::vector<double>> arrayMap, double result ) {
   LIMEX::Handle<double> handle;
   handle.addAggregator( "second", [](const LIMEX::View<double>& values) -> double {
     if ( values.size() < 2 ) throw std::runtime_error("second{} requires at least two values");
@@ -153,10 +170,7 @@ void testCustomAggregator( std::string input, std::map<std::string,std::vector<d
   });
   try {
     LIMEX::Expression<double> expression(input,handle);
-    LIMEX::Resolver<double> resolver;
-    resolver.collection = [&](size_t path, const std::vector<double>&) -> LIMEX::View<double> {
-      return LIMEX::View<double>( collectionMap.at(expression.getPaths().at(path).name) );
-    };
+    MapResolver resolver(expression, arrayMap);
     std::cerr << input << " = " << expression.evaluate({},resolver);
     if (expression.evaluate({},resolver) == result) {
       std::cerr << GREEN_COLOR << " [pass]" << RESET_COLOR << std::endl;
@@ -180,9 +194,12 @@ struct PathData {
   std::vector<double> cost = { 10.0, 20.0, 30.0 };
   std::vector< std::vector<double> > flags = { { 1.0, 0.0 }, { 0.0, 1.0 }, { 1.0, 1.0 } };
 
-  LIMEX::Resolver<double> resolver(const LIMEX::Expression<double>& expression, const std::map<std::string, std::vector<double>>& extra) const {
-    LIMEX::Resolver<double> resolver;
-    resolver.value = [this, &expression](size_t path, const std::vector<double>& indices) -> double {
+  // Resolves the paths of an expression in the data, a path without steps naming one of the arrays or one of
+  // the further arrays given.
+  class Resolver : public LIMEX::Resolver<double> {
+  public:
+    Resolver(const PathData& data, const LIMEX::Expression<double>& expression, const std::map<std::string, std::vector<double>>& extra) : data(data), expression(expression), extra(extra) {}
+    double value(size_t path, const std::vector<double>& indices) const override {
       const auto& description = expression.getPaths().at(path);
       std::string shape;
       for ( const auto& step : description.steps ) {
@@ -192,35 +209,38 @@ struct PathData {
         if ( index < 1 || index > (double)values.size() ) throw std::runtime_error("illegal index");
         return values[(size_t)index - 1];
       };
-      if ( description.name == "location" && shape == "[]" ) return at(location, indices[0]);
-      if ( description.name == "facilities" && shape == "[].cost" ) return at(cost, indices[0]);
+      if ( description.name == "location" && shape == "[]" ) return at(data.location, indices[0]);
+      if ( description.name == "facilities" && shape == "[].cost" ) return at(data.cost, indices[0]);
       if ( description.name == "facilities" && shape == "[].flags[]" ) {
-        if ( indices[0] < 1 || indices[0] > (double)flags.size() ) throw std::runtime_error("illegal index");
-        return at(flags[(size_t)indices[0] - 1], indices[1]);
+        if ( indices[0] < 1 || indices[0] > (double)data.flags.size() ) throw std::runtime_error("illegal index");
+        return at(data.flags[(size_t)indices[0] - 1], indices[1]);
       }
       if ( description.name == "grid" && shape == "[][]" ) return 10.0 * indices[0] + indices[1];
       throw std::runtime_error("unsupported path '" + description.name + shape + "'");
-    };
-    resolver.collection = [this, &expression, &extra](size_t path, const std::vector<double>& indices) -> LIMEX::View<double> {
+    }
+    LIMEX::View<double> array(size_t path, const std::vector<double>& indices) const override {
       const auto& description = expression.getPaths().at(path);
       if ( description.steps.empty() ) {
-        if ( description.name == "location" ) return LIMEX::View<double>( location );
-        if ( description.name == "partial" ) return LIMEX::View<double>( partial );
+        if ( description.name == "location" ) return LIMEX::View<double>( data.location );
+        if ( description.name == "partial" ) return LIMEX::View<double>( data.partial );
         return LIMEX::View<double>( extra.at(description.name) );
       }
       if ( description.name == "facilities" && description.steps.size() == 2 && description.steps[1] == "flags" ) {
-        if ( indices[0] < 1 || indices[0] > (double)flags.size() ) throw std::runtime_error("illegal index");
-        return LIMEX::View<double>( flags[(size_t)indices[0] - 1] );
+        if ( indices[0] < 1 || indices[0] > (double)data.flags.size() ) throw std::runtime_error("illegal index");
+        return LIMEX::View<double>( data.flags[(size_t)indices[0] - 1] );
       }
       throw std::runtime_error("unsupported array '" + description.name + "'");
-    };
-    return resolver;
-  }
+    }
+  private:
+    const PathData& data;
+    const LIMEX::Expression<double>& expression;
+    const std::map<std::string, std::vector<double>>& extra;
+  };
 
 };
 
 // Evaluates an expression with paths into the data above, the given variables and further arrays.
-void testPaths( std::string input, std::map<std::string,double> valueMap, double result, std::map<std::string,std::vector<double>> collectionMap = {} ) {
+void testPaths( std::string input, std::map<std::string,double> valueMap, double result, std::map<std::string,std::vector<double>> arrayMap = {} ) {
   LIMEX::Handle<double> handle;
   PathData data;
   try {
@@ -229,7 +249,7 @@ void testPaths( std::string input, std::map<std::string,double> valueMap, double
     for ( auto variable : expression.getVariables() ) {
       variableValues.push_back( valueMap.at(variable) );
     }
-    auto resolver = data.resolver(expression, collectionMap);
+    PathData::Resolver resolver(data, expression, arrayMap);
     double value = expression.evaluate(variableValues, resolver);
     std::cerr << input << " = " << value;
     if ( value == result ) {
@@ -257,7 +277,7 @@ void testTarget( std::string input, std::map<std::string,double> valueMap, doubl
       variableValues.push_back( valueMap.at(variable) );
     }
     std::map<std::string, std::vector<double>> none;
-    auto resolver = data.resolver(expression, none);
+    PathData::Resolver resolver(data, expression, none);
     double value = expression.evaluate(variableValues, resolver);
     auto targetIndices = expression.evaluateTargetIndices(variableValues, resolver);
     std::cerr << input << " assigns " << value << " to " << expression.getTarget().value_or("?") << " at [";
@@ -309,7 +329,7 @@ void test() {
   test("min{1,2,3}", 1); // set operation
   test("max{1,2,3}", 3); // set operation
   test("sum{x, y, z}", { {"x", 1.0}, {"y", 2.0}, {"z", 3.0} }, 6.0); // set with variables
-  testParseError("sum(a, b, c)"); // aggregator with () requires single collection
+  testParseError("sum(a, b, c)"); // aggregator with () requires single array
   test("5*4²", 5*4*4); // postfix and infix
   test("!2³", !std::pow(2,3)); // prefix and postfix
   test("-2³ * 2", -std::pow(2,3) * 2 ); // prefix, postfix and infix
@@ -321,11 +341,11 @@ void test() {
   test("2 not in {1,2,3}", false); // not_element_of
   test("2 ∉ {1,2,3}", false); // not_element_of
   test("4 ∉ {1,2,3}", true); // not_element_of
-// External collection membership
-  test("x in X", { {"x", 3.0} }, { {"X", {1.0, 2.0, 3.0}} }, true); // element_of with collection
-  test("x in X", { {"x", 4.0} }, { {"X", {1.0, 2.0, 3.0}} }, false); // element_of with collection
-  test("x not in X", { {"x", 3.0} }, { {"X", {1.0, 2.0, 3.0}} }, false); // not_element_of with collection
-  test("x not in X", { {"x", 4.0} }, { {"X", {1.0, 2.0, 3.0}} }, true); // not_element_of with collection
+// Membership of an array
+  test("x in X", { {"x", 3.0} }, { {"X", {1.0, 2.0, 3.0}} }, true); // element_of with an array
+  test("x in X", { {"x", 4.0} }, { {"X", {1.0, 2.0, 3.0}} }, false); // element_of with an array
+  test("x not in X", { {"x", 3.0} }, { {"X", {1.0, 2.0, 3.0}} }, false); // not_element_of with an array
+  test("x not in X", { {"x", 4.0} }, { {"X", {1.0, 2.0, 3.0}} }, true); // not_element_of with an array
   test("true and false", false); // logical_and
   test("true && false", false); // logical_and
   test("true ∧ false", false); // logical_and
@@ -385,7 +405,7 @@ void test() {
   test("3*x", { {"x", 5.0} }, 3*5);
   test("x - y + z", { {"z", 2.0}, {"x", 3.0}, {"y", 5.0} }, 3 - 5 + 2); 
 
-// Collections
+// Arrays
   test("x[2]", {}, { {"x", { 2.0, 5.0, 3.0} } }, 5.0);
   test("y + x[5-2]", { {"y", 5.0} }, { {"x", { 2.0, 5.0, 3.0} } }, 8.0);
   test("sum(X)", {}, { {"X", { 2.0, 5.0, 3.0} } }, 10.0);
@@ -406,7 +426,7 @@ void test() {
   test("x /= if x > 3 then 2 else 1", { {"x", 5.0} }, 2.5);
   test("x /= if x > 3 then 2 else 1", { {"x", 2.0} }, 2);
 
-// Aggregations over an expression with a binding over a collection
+// Aggregations over an expression with a binding over an array
   test("sum{ i | i in I, i > 1 }", {}, { {"I", { -2.0, 3.0, 1.0, 5.0, 0.0 } } }, 8.0); // 3 + 5
   test("sum{ i | i in I, i >= 1 }", {}, { {"I", { -2.0, 3.0, 1.0, 5.0, 0.0 } } }, 9.0); // 3 + 1 + 5
   test("count{ i | i in I, i > 0 }", {}, { {"I", { -2.0, 3.0, -1.0, 5.0, 0.0 } } }, 2.0); // 3, 5
@@ -423,7 +443,7 @@ void test() {
   // Nested filtered aggregations
   test("max{ i | i in I, i > min{ j | j in J, j > 0 } }", {}, { {"I", { 1.0, 2.0, 3.0, 4.0 }}, {"J", { -1.0, 2.0, 3.0 }} }, 4.0); // min{J|j>0}=2, max{I|i>2}=4
   test("sum{ i | i in I, i >= min{ j | j in J, j > 0 } }", {}, { {"I", { 1.0, 2.0, 3.0, 4.0 }}, {"J", { -1.0, 2.0, 3.0 }} }, 9.0); // min{J|j>0}=2, sum{I|i>=2}=2+3+4=9
-  // Collection membership in conditions
+  // Membership of an array in conditions
   test("sum{ i | i in I, i in J }", {}, { {"I", { 1.0, 2.0, 3.0, 4.0 }}, {"J", { 2.0, 4.0, 6.0 }} }, 6.0); // 2 + 4
   test("sum{ i | i in I, i not in J }", {}, { {"I", { 1.0, 2.0, 3.0, 4.0 }}, {"J", { 2.0, 4.0, 6.0 }} }, 4.0); // 1 + 3
 
@@ -497,7 +517,7 @@ void test() {
   testComputed("7 not in X", 5, 1.0);
   testComputed("sum{ x | x in X, x > 4 }", 5, 24.0); // 6 + 8 + 10
   testComputed("count(X)", 0, 0.0);
-  // custom aggregator receiving a view, of a collection and of explicit arguments
+  // custom aggregator receiving a view, of an array and of explicit arguments
   testCustomAggregator("second(X)", { {"X", { 7.0, 8.0, 9.0 }} }, 8.0);
   testCustomAggregator("second{ 3, 4, 5 }", {}, 4.0);
 }
