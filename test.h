@@ -1,5 +1,7 @@
 #include <cassert>
+#include <cmath>
 #include <iostream>
+#include <limits>
 #include <map>
 
 constexpr const char* RESET_COLOR = "\033[0m";
@@ -78,8 +80,22 @@ void test( std::string input, std::map<std::string,double> valueMap, std::map<st
       collectionValues.emplace_back( collectionMap.at(collection) );
     }
 
-    std::cerr << "implies " << input << " = " << expression.evaluate(variableValues,collectionValues) ;
-    if (expression.evaluate(variableValues,collectionValues) == result) {
+    // a path of one index addresses an element of a collection of the map, counting from one
+    LIMEX::Resolver<double> resolver;
+    resolver.value = [&](size_t path, const std::vector<double>& indices) -> double {
+      const auto& description = expression.getPaths().at(path);
+      if ( description.steps.size() != 1 || description.steps[0].has_value() ) {
+        throw std::runtime_error("unsupported path '" + description.name + "'");
+      }
+      const auto& values = collectionMap.at(description.name);
+      if ( indices[0] < 1 || indices[0] > (double)values.size() ) {
+        throw std::runtime_error("illegal index for '" + description.name + "'");
+      }
+      return values[(size_t)indices[0] - 1];
+    };
+
+    std::cerr << "implies " << input << " = " << expression.evaluate(variableValues,collectionValues,resolver) ;
+    if (expression.evaluate(variableValues,collectionValues,resolver) == result) {
       std::cerr << GREEN_COLOR << " [pass]" << RESET_COLOR << std::endl;
     }
     else {
@@ -106,8 +122,13 @@ void testComputed( std::string input, size_t size, double result ) {
       }
       collectionValues.push_back( computed );
     }
-    std::cerr << "X computed with " << size << " values implies " << input << " = " << expression.evaluate({},collectionValues);
-    if (expression.evaluate({},collectionValues) == result) {
+    // a path of one index addresses an element of X
+    LIMEX::Resolver<double> resolver;
+    resolver.value = [&](size_t path [[maybe_unused]], const std::vector<double>& indices) -> double {
+      return computed[(size_t)indices[0] - 1];
+    };
+    std::cerr << "X computed with " << size << " values implies " << input << " = " << expression.evaluate({},collectionValues,resolver);
+    if (expression.evaluate({},collectionValues,resolver) == result) {
       std::cerr << GREEN_COLOR << " [pass]" << RESET_COLOR << std::endl;
     }
     else {
@@ -144,6 +165,122 @@ void testCustomAggregator( std::string input, std::map<std::string,std::vector<d
   catch (const std::exception& e) {
     std::cerr << "Failed evaluating: " + input << std::endl;
     std::cerr << e.what() << std::endl;
+  }
+}
+
+// The data of the path tests: the arrays `location` and `partial` (with an undefined element), passed as
+// collections, and, resolved through paths, `location` by index, the array of objects `facilities` with the
+// fields `cost` and `flags`, and the matrix `grid` with grid[i][j] = 10 * i + j.
+struct PathData {
+  std::vector<double> location = { 3.0, 1.0, 2.0 };
+  std::vector<double> partial = { 1.0, std::numeric_limits<double>::quiet_NaN(), 3.0 };
+  std::vector<double> cost = { 10.0, 20.0, 30.0 };
+  std::vector< std::vector<double> > flags = { { 1.0, 0.0 }, { 0.0, 1.0 }, { 1.0, 1.0 } };
+
+  LIMEX::Resolver<double> resolver(const LIMEX::Expression<double>& expression) const {
+    LIMEX::Resolver<double> resolver;
+    resolver.value = [this, &expression](size_t path, const std::vector<double>& indices) -> double {
+      const auto& description = expression.getPaths().at(path);
+      std::string shape;
+      for ( const auto& step : description.steps ) {
+        shape += step.has_value() ? "." + step.value() : "[]";
+      }
+      auto at = [](const std::vector<double>& values, double index) -> double {
+        if ( index < 1 || index > (double)values.size() ) throw std::runtime_error("illegal index");
+        return values[(size_t)index - 1];
+      };
+      if ( description.name == "location" && shape == "[]" ) return at(location, indices[0]);
+      if ( description.name == "facilities" && shape == "[].cost" ) return at(cost, indices[0]);
+      if ( description.name == "facilities" && shape == "[].flags[]" ) {
+        if ( indices[0] < 1 || indices[0] > (double)flags.size() ) throw std::runtime_error("illegal index");
+        return at(flags[(size_t)indices[0] - 1], indices[1]);
+      }
+      if ( description.name == "grid" && shape == "[][]" ) return 10.0 * indices[0] + indices[1];
+      throw std::runtime_error("unsupported path '" + description.name + shape + "'");
+    };
+    resolver.collection = [this, &expression](size_t path, const std::vector<double>& indices) -> LIMEX::View<double> {
+      const auto& description = expression.getPaths().at(path);
+      if ( description.name == "facilities" && description.steps.size() == 2 && description.steps[1] == "flags" ) {
+        if ( indices[0] < 1 || indices[0] > (double)flags.size() ) throw std::runtime_error("illegal index");
+        return LIMEX::View<double>( flags[(size_t)indices[0] - 1] );
+      }
+      throw std::runtime_error("unsupported array '" + description.name + "'");
+    };
+    return resolver;
+  }
+
+  std::vector< LIMEX::View<double> > collections(const LIMEX::Expression<double>& expression, const std::map<std::string, std::vector<double>>& extra) const {
+    std::vector< LIMEX::View<double> > views;
+    for ( auto collection : expression.getCollections() ) {
+      if ( collection == "location" ) views.emplace_back( location );
+      else if ( collection == "partial" ) views.emplace_back( partial );
+      else views.emplace_back( extra.at(collection) );
+    }
+    return views;
+  }
+};
+
+// Evaluates an expression with paths into the data above, the given variables and further collections.
+void testPaths( std::string input, std::map<std::string,double> valueMap, double result, std::map<std::string,std::vector<double>> collectionMap = {} ) {
+  LIMEX::Handle<double> handle;
+  PathData data;
+  try {
+    LIMEX::Expression<double> expression(input,handle);
+    std::vector<double> variableValues;
+    for ( auto variable : expression.getVariables() ) {
+      variableValues.push_back( valueMap.at(variable) );
+    }
+    auto collectionValues = data.collections(expression, collectionMap);
+    auto resolver = data.resolver(expression);
+    double value = expression.evaluate(variableValues, collectionValues, resolver);
+    std::cerr << input << " = " << value;
+    if ( value == result ) {
+      std::cerr << GREEN_COLOR << " [pass]" << RESET_COLOR << std::endl;
+    }
+    else {
+      std::cerr << RED_COLOR << " [fail, expected " << result << "]" << RESET_COLOR << std::endl;
+    }
+  }
+  catch (const std::exception& e) {
+    std::cerr << "Failed evaluating: " + input << std::endl;
+    std::cerr << e.what() << RED_COLOR << " [fail]" << RESET_COLOR << std::endl;
+  }
+}
+
+// Evaluates an assignment to a path: the value assigned, the target, the indices of the target path and the
+// variables the expression reads.
+void testTarget( std::string input, std::map<std::string,double> valueMap, double result, std::string target, std::vector<double> indices, std::vector<std::string> variables ) {
+  LIMEX::Handle<double> handle;
+  PathData data;
+  try {
+    LIMEX::Expression<double> expression(input,handle);
+    std::vector<double> variableValues;
+    for ( auto variable : expression.getVariables() ) {
+      variableValues.push_back( valueMap.at(variable) );
+    }
+    auto collectionValues = data.collections(expression, {});
+    auto resolver = data.resolver(expression);
+    double value = expression.evaluate(variableValues, collectionValues, resolver);
+    auto targetIndices = expression.evaluateTargetIndices(variableValues, collectionValues, resolver);
+    std::cerr << input << " assigns " << value << " to " << expression.getTarget().value_or("?") << " at [";
+    for ( auto index : targetIndices ) std::cerr << " " << index;
+    std::cerr << " ]";
+    if (
+      value == result &&
+      expression.getTarget() == target &&
+      targetIndices == indices &&
+      expression.getVariables() == variables &&
+      expression.getTargetPath().has_value() == !indices.empty()
+    ) {
+      std::cerr << GREEN_COLOR << " [pass]" << RESET_COLOR << std::endl;
+    }
+    else {
+      std::cerr << RED_COLOR << " [fail]" << RESET_COLOR << std::endl;
+    }
+  }
+  catch (const std::exception& e) {
+    std::cerr << "Failed evaluating: " + input << std::endl;
+    std::cerr << e.what() << RED_COLOR << " [fail]" << RESET_COLOR << std::endl;
   }
 }
 
@@ -271,29 +408,83 @@ void test() {
   test("x /= if x > 3 then 2 else 1", { {"x", 5.0} }, 2.5);
   test("x /= if x > 3 then 2 else 1", { {"x", 2.0} }, 2);
 
-// Filtered aggregations
-  test("sum{ i in I | i > 1 }", {}, { {"I", { -2.0, 3.0, 1.0, 5.0, 0.0 } } }, 8.0); // 3 + 5
-  test("sum{ i in I | i >= 1 }", {}, { {"I", { -2.0, 3.0, 1.0, 5.0, 0.0 } } }, 9.0); // 3 + 1 + 5
-  test("count{ i in I | i > 0 }", {}, { {"I", { -2.0, 3.0, -1.0, 5.0, 0.0 } } }, 2.0); // 3, 5
-  test("min{ i in I | i > 0 }", {}, { {"I", { -2.0, 3.0, -1.0, 5.0, 0.0 } } }, 3.0);
-  test("max{ i in I | i < 0 }", {}, { {"I", { -2.0, 3.0, -1.0, 5.0, 0.0 } } }, -1.0);
-  test("avg{ i in I | i > 0 }", {}, { {"I", { -2.0, 3.0, -1.0, 5.0, 0.0 } } }, 4.0); // (3 + 5) / 2
+// Aggregations over an expression with a binding over a collection
+  test("sum{ i | i in I, i > 1 }", {}, { {"I", { -2.0, 3.0, 1.0, 5.0, 0.0 } } }, 8.0); // 3 + 5
+  test("sum{ i | i in I, i >= 1 }", {}, { {"I", { -2.0, 3.0, 1.0, 5.0, 0.0 } } }, 9.0); // 3 + 1 + 5
+  test("count{ i | i in I, i > 0 }", {}, { {"I", { -2.0, 3.0, -1.0, 5.0, 0.0 } } }, 2.0); // 3, 5
+  test("min{ i | i in I, i > 0 }", {}, { {"I", { -2.0, 3.0, -1.0, 5.0, 0.0 } } }, 3.0);
+  test("max{ i | i in I, i < 0 }", {}, { {"I", { -2.0, 3.0, -1.0, 5.0, 0.0 } } }, -1.0);
+  test("avg{ i | i in I, i > 0 }", {}, { {"I", { -2.0, 3.0, -1.0, 5.0, 0.0 } } }, 4.0); // (3 + 5) / 2
   // Multiple conditions (AND-ed)
-  test("sum{ i in I | i > 0, i < 5 }", {}, { {"I", { -2.0, 3.0, -1.0, 5.0, 0.0, 2.0 } } }, 5.0); // 3 + 2
+  test("sum{ i | i in I, i > 0, i < 5 }", {}, { {"I", { -2.0, 3.0, -1.0, 5.0, 0.0, 2.0 } } }, 5.0); // 3 + 2
   // With external variable
-  test("sum{ i in I | i > x }", { {"x", 0.0} }, { {"I", { -2.0, 3.0, -1.0, 5.0 } } }, 8.0); // 3 + 5
-  test("sum{ i in I | i > x }", { {"x", 3.0} }, { {"I", { -2.0, 3.0, -1.0, 5.0 } } }, 5.0); // 5
+  test("sum{ i | i in I, i > x }", { {"x", 0.0} }, { {"I", { -2.0, 3.0, -1.0, 5.0 } } }, 8.0); // 3 + 5
+  test("sum{ i | i in I, i > x }", { {"x", 3.0} }, { {"I", { -2.0, 3.0, -1.0, 5.0 } } }, 5.0); // 5
   // Iterator reuse in different aggregations
-  test("sum{ i in I | i > 0 } + min{ i in I | i < 0 }", {}, { {"I", { -2.0, 3.0, -1.0, 5.0 } } }, 6.0); // (3+5) + (-2)
+  test("sum{ i | i in I, i > 0 } + min{ i | i in I, i < 0 }", {}, { {"I", { -2.0, 3.0, -1.0, 5.0 } } }, 6.0); // (3+5) + (-2)
   // Nested filtered aggregations
-  test("max{ i in I | i > min{ j in J | j > 0 } }", {}, { {"I", { 1.0, 2.0, 3.0, 4.0 }}, {"J", { -1.0, 2.0, 3.0 }} }, 4.0); // min{J|j>0}=2, max{I|i>2}=4
-  test("sum{ i in I | i >= min{ j in J | j > 0 } }", {}, { {"I", { 1.0, 2.0, 3.0, 4.0 }}, {"J", { -1.0, 2.0, 3.0 }} }, 9.0); // min{J|j>0}=2, sum{I|i>=2}=2+3+4=9
+  test("max{ i | i in I, i > min{ j | j in J, j > 0 } }", {}, { {"I", { 1.0, 2.0, 3.0, 4.0 }}, {"J", { -1.0, 2.0, 3.0 }} }, 4.0); // min{J|j>0}=2, max{I|i>2}=4
+  test("sum{ i | i in I, i >= min{ j | j in J, j > 0 } }", {}, { {"I", { 1.0, 2.0, 3.0, 4.0 }}, {"J", { -1.0, 2.0, 3.0 }} }, 9.0); // min{J|j>0}=2, sum{I|i>=2}=2+3+4=9
   // Collection membership in conditions
-  test("sum{ i in I | i in J }", {}, { {"I", { 1.0, 2.0, 3.0, 4.0 }}, {"J", { 2.0, 4.0, 6.0 }} }, 6.0); // 2 + 4
-  test("sum{ i in I | i not in J }", {}, { {"I", { 1.0, 2.0, 3.0, 4.0 }}, {"J", { 2.0, 4.0, 6.0 }} }, 4.0); // 1 + 3
+  test("sum{ i | i in I, i in J }", {}, { {"I", { 1.0, 2.0, 3.0, 4.0 }}, {"J", { 2.0, 4.0, 6.0 }} }, 6.0); // 2 + 4
+  test("sum{ i | i in I, i not in J }", {}, { {"I", { 1.0, 2.0, 3.0, 4.0 }}, {"J", { 2.0, 4.0, 6.0 }} }, 4.0); // 1 + 3
 
-  // Function call requires collection and fails if function_call is used
+  // Throw on illegal/unsupported notation, including the former filtered aggregation
   testParseError("min{ d in sqrt(x) | d >= 0 }");
+  testParseError("sum{ i in I | i > 1 }");
+  testParseError("sum{ i | i in sqrt(x) }");
+  testParseError("sum{ i | i > 1 }");
+  testParseError("sum{ | i in 1..3 }");
+  testParseError("1..3");
+  testParseError("x | y");
+  testParseError("sum{ i[1] | i in 1..3 }");
+
+// Paths
+  testPaths("location[2]", {}, 1.0);
+  testPaths("location[i]", { {"i", 3.0} }, 2.0);
+  testPaths("facilities[2].cost", {}, 20.0);
+  testPaths("facilities[i].flags[j]", { {"i", 3.0}, {"j", 2.0} }, 1.0);
+  testPaths("grid[2][3]", {}, 23.0);
+  testPaths("grid[1 + 1][location[3]]", {}, 22.0);
+  testPaths("facilities[location[1]].cost", {}, 30.0); // location[1] = 3
+  testPaths("facilities[2].cost²", {}, 400.0);
+  testPaths("sum(facilities[3].flags)", {}, 2.0);
+  testPaths("1 in facilities[1].flags", {}, 1.0);
+  testPaths("1 not in facilities[2].flags", {}, 0.0);
+  testPaths("x + 0.5 * facilities[1].cost", { {"x", 1.0} }, 6.0);
+
+// Aggregations over an expression
+  testPaths("sum{ facilities[i].cost | i in 1..3 }", {}, 60.0);
+  testPaths("sum{ facilities[i].cost | i in 1..3, i < 3 }", {}, 30.0);
+  testPaths("sum{ grid[i][j] | i in 1..2, j in 1..3 }", {}, 102.0); // 11 + 12 + 13 + 21 + 22 + 23
+  testPaths("sum{ grid[i][j] | i in 1..2, j in i..3 }", {}, 81.0); // 11 + 12 + 13 + 22 + 23
+  testPaths("sum{ grid[i][j] | i in 1..2, j in 1..3, i == j }", {}, 33.0); // 11 + 22
+  testPaths("count{ i | i in 1..size(location), location[i] == 1 }", {}, 1.0);
+  testPaths("sum{ i * location[i] | i in 1..size(location) }", {}, 11.0); // 3 + 2 + 6
+  testPaths("sum{ f | f in facilities[3].flags }", {}, 2.0);
+  testPaths("max{ sum{ grid[i][j] | j in 1..3 } | i in 1..2 }", {}, 66.0); // 21 + 22 + 23
+  testPaths("sum{ i | i in 1..3, (y in location) }", { {"y", 5.0} }, 0.0);
+  testPaths("sum{ i | i in 1..3, (y in location) }", { {"y", 3.0} }, 6.0);
+  testPaths("sum{ i | i in 1..2 } + sum{ i | i in 1..3 }", {}, 9.0);
+  testPaths("sum{ i | i in I, i > 0 } + y", { {"y", 10.0} }, 18.0, { {"I", { -2.0, 3.0, -1.0, 5.0 }} });
+  testPaths("sum{ i | i in n..m }", { {"n", 3.0}, {"m", 2.0} }, 0.0); // empty range
+  testPaths("sum{ i | i in 1.5..3 }", {}, 5.0); // 2 + 3
+
+// Undefined elements
+  testPaths("sum(partial)", {}, 4.0);
+  testPaths("count(partial)", {}, 2.0);
+  testPaths("size(partial)", {}, 3.0);
+  testPaths("avg(partial)", {}, 2.0);
+  testPaths("min(partial)", {}, 1.0);
+  testPaths("max(partial)", {}, 3.0);
+  testPaths("sum{ p | p in partial }", {}, 4.0);
+  testPaths("count{ p | p in partial }", {}, 2.0);
+
+// Assignments to paths
+  testTarget("location[i] := j", { {"i", 2.0}, {"j", 7.0} }, 7.0, "location", { 2.0 }, { "i", "j" });
+  testTarget("facilities[i].cost += 5", { {"i", 1.0} }, 15.0, "facilities", { 1.0 }, { "i" });
+  testTarget("facilities[location[1]].flags[2] := 0", {}, 0.0, "facilities", { 3.0, 2.0 }, {});
+  testTarget("x := 3", {}, 3.0, "x", {}, {});
 
 // Views
   // computed views, X = [2, 4, 6, 8, 10]
@@ -304,7 +495,7 @@ void test() {
   testComputed("6 in X", 5, 1.0);
   testComputed("7 in X", 5, 0.0);
   testComputed("7 not in X", 5, 1.0);
-  testComputed("sum{ x in X | x > 4 }", 5, 24.0); // 6 + 8 + 10
+  testComputed("sum{ x | x in X, x > 4 }", 5, 24.0); // 6 + 8 + 10
   testComputed("count(X)", 0, 0.0);
   // custom aggregator receiving a view, of a collection and of explicit arguments
   testCustomAggregator("second(X)", { {"X", { 7.0, 8.0, 9.0 }} }, 8.0);

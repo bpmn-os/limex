@@ -17,6 +17,8 @@
 #include <cmath>
 #include <cfloat>
 #include <cstddef>
+#include <limits>
+#include <unordered_map>
 /**
  * A library for parsing mathematical expressions
  **/
@@ -29,12 +31,12 @@ namespace LIMEX {
  */
 struct Token {
   enum class Category { PREFIX, OPERAND, POSTFIX, INFIX }; /// Categories of input to be parsed by lexer
-  enum class Type { NUMBER, VARIABLE, COLLECTION, OPERATOR, SEPARATOR, GROUP, SET, SEQUENCE, FUNCTION_CALL, AGGREGATION, INDEXED_VARIABLE };    
+  enum class Type { NUMBER, VARIABLE, COLLECTION, OPERATOR, SEPARATOR, GROUP, SET, SEQUENCE, FUNCTION_CALL, AGGREGATION, PATH, FIELD, INDEX };
   Token(Category category, Type type, std::string value = "") : category(category), type(type), value(std::move(value)) {}
   Category category;
   Type type;
   std::string value;
-  std::vector<Token> children; // for nested tokens (GROUP, SET, FUNCTION_CALL, AGGREGATION, INDEXED_VARIABLE)
+  std::vector<Token> children; // for nested tokens (GROUP, SET, FUNCTION_CALL, AGGREGATION, PATH, INDEX)
   inline std::string stringify(int indent = 0) const;
 };
 
@@ -92,6 +94,44 @@ private:
   std::function<T(size_t)> accessor;
 };
 
+/**
+ * @brief Description of an access path `name ( .field | [expression] )*` in an expression.
+ *
+ * Each step is either a field, given by its name, or an index, given by `std::nullopt`. The values of the index
+ * expressions are handed to the resolver in the order of the index steps.
+ */
+struct Path {
+  std::string name;
+  std::vector< std::optional<std::string> > steps;
+};
+
+/**
+ * @brief Callbacks with which the caller of an evaluation resolves the access paths of an expression.
+ *
+ * `value(path, indices)` returns the value a path addresses and `collection(path, indices)` the array a path
+ * addresses, where `path` is the position of the path in `Expression::getPaths()` and `indices` holds the
+ * values of its index expressions in order. The indices are passed as they are evaluated, so that their
+ * numbering and their bounds are the caller's to check. A path is resolved as an array where an array is
+ * expected, i.e. as the argument of an aggregator, on the right of `in` and in a binding of an aggregation,
+ * and as a value everywhere else.
+ */
+template <typename T, typename C = View<T> >
+struct Resolver {
+  std::function<T(size_t, const std::vector<T>&)> value;
+  std::function<C(size_t, const std::vector<T>&)> collection;
+};
+
+/**
+ * @brief The values an evaluation reads: those supplied by the caller and the values of the iterators.
+ */
+template <typename T, typename C = View<T> >
+struct Context {
+  const std::vector<T>& variableValues;
+  const std::vector<C>& collectionValues;
+  const Resolver<T,C>& resolver;
+  std::vector<T> iteratorValues;
+};
+
 enum class Type; /// Types of nodes in the abstract syntax tree
 
 template <typename T, typename C = View<T> > class Expression;
@@ -121,7 +161,13 @@ public:
   template <typename U>
   Node(Expression<T,C>* expression, const Node<U>& other);
   // Evaluate the node
-  inline T evaluate( const std::vector<T>& variableValues = {}, const std::vector<C>& collectionValues = {}) const;
+  inline T evaluate( Context<T,C>& context ) const;
+  // Evaluate the index expressions of a path node
+  inline std::vector<T> evaluateIndices( Context<T,C>& context ) const;
+  // Evaluate a collection or collection path node to the array it denotes
+  inline C evaluateCollection( Context<T,C>& context ) const;
+  // Returns true if the node or one of its descendants reads the iterator with the given slot
+  inline bool usesIterator( size_t slot ) const;
   std::string stringify() const;
 };
 
@@ -138,15 +184,7 @@ public:
   inline const std::vector<std::string>& getAggregatorNames() const { return aggregatorNames; }
   inline size_t getFunctionIndex(const std::string& name) const;
   inline size_t getAggregatorIndex(const std::string& name) const;
-  inline T indexedEvaluation( const C& collection, const T& index ) const;
   inline T aggregateEvaluation( const std::string& name, const C& collection ) const;
-  inline T filteredAggregateEvaluation(
-    const std::string& name,
-    const C& collection,
-    const Node<T,C>& conditions,
-    const std::vector<T>& variableValues,
-    const std::vector<C>& collectionValues
-  ) const;
   inline T membershipEvaluation(
     const std::string& name,
     const T& element,
@@ -177,14 +215,19 @@ class Expression {
 friend class Node<T,C>;
 public:
   Expression(const std::string& expression, const Handle<T,C>& handle);
-  inline auto getVariables() const {
-    return variables | std::views::filter([this](const auto& var) {
-      return !iteratorVariables.contains(var);
-    });
-  }
+  /// The names of the variables, whose values the caller passes in this order
+  inline const std::vector<std::string>& getVariables() const { return variables; }
+  /// The names of the collections, whose views the caller passes in this order
   inline const std::vector<std::string>& getCollections() const { return collections; }
+  /// The access paths, which the caller resolves by their position in this vector
+  inline const std::vector<Path>& getPaths() const { return paths; }
+  /// The name of the variable or path an assignment assigns to
   inline const std::optional<std::string>& getTarget() const { return target; }
-  inline T evaluate( const std::vector<T>& variableValues = {}, const std::vector<C>& collectionValues = {}) const;
+  /// The position of the path an assignment assigns to, if the target is a path
+  inline const std::optional<size_t>& getTargetPath() const { return targetPath; }
+  inline T evaluate( const std::vector<T>& variableValues = {}, const std::vector<C>& collectionValues = {}, const Resolver<T,C>& resolver = {}) const;
+  /// Evaluates the indices of the path an assignment assigns to, which the caller writes
+  inline std::vector<T> evaluateTargetIndices( const std::vector<T>& variableValues = {}, const std::vector<C>& collectionValues = {}, const Resolver<T,C>& resolver = {}) const;
   inline const Node<T,C>& getRoot() const { return root; }
   const std::string input;
   inline std::string stringify() const;
@@ -192,11 +235,17 @@ private:
   const Handle<T,C>& handle;
   std::vector<std::string> variables;
   std::vector<std::string> collections;
-  std::set<std::string> iteratorVariables;
+  std::vector<Path> paths;
+  std::vector<std::string> iterators; ///< The names of the iterators, one slot per binding
+  std::vector< std::unordered_map<std::string,size_t> > scopes; ///< The iterators bound while parsing an aggregation
   std::optional<std::string> target;
+  std::optional<size_t> targetPath;
   Node<T,C> root;
   inline Node<T,C> parse();
   inline static Token tokenize(const std::string& input);
+  inline static Token readPath(const std::string& input, size_t& pos, std::string name);
+  inline static bool isNameStart(char c) { return (std::isalpha( (unsigned char)c ) || c == '_'); };
+  inline std::optional<size_t> boundIterator(const std::string& name) const;
   inline static bool isnumeric(char c) { return (std::isdigit( c ) || c == '.'); }; 
   inline static bool isalphanumeric(char c) { return (std::isalnum(c) || c == '_'); }; 
   inline size_t getIndex(std::vector<std::string>& container, std::string name);
@@ -205,18 +254,7 @@ private:
   template <size_t N>
   inline static std::string fetch(const std::string& input, size_t start, const std::array<std::string_view, N>& prefix);
   Node<T,C> buildTree( Type type, const std::vector<Token>& tokens, std::optional<size_t> index = std::nullopt );
-  // Helper to collect variable names from tokens (skips AGGREGATION tokens for nested iterators)
-  inline static void collectVariableNames(const std::vector<Token>& tokens, std::set<std::string>& names) {
-    for (const auto& token : tokens) {
-      if (token.type == Token::Type::VARIABLE) {
-        names.insert(token.value);
-      }
-      // Skip AGGREGATION tokens - they have their own scoped iterators
-      if (token.type != Token::Type::AGGREGATION) {
-        collectVariableNames(token.children, names);
-      }
-    }
-  }
+  Node<T,C> buildAggregationOver( const Token& token );
 };
 
 enum class Type {
@@ -228,9 +266,14 @@ enum class Type {
     sequence, // a block encapsulated in '[' and ']'
     function_call,  // a function call of the form '<function_name>(...)'
     aggregation, // an aggregate operation of the form '<operation_name>{...}'
-    filtered_aggregation, // a filtered aggregate operation of the form '<operation_name>{ <var> in <collection> | <conditions> }'
-    such_that, // helper for filtered aggregation, '|' separator
-    index,  // an indexing operation of the form '<variable_name>[...]'
+    aggregation_over, // an aggregation of the form '<operation_name>{ <expression> | <bindings>, <conditions> }'
+    range_binding, // a binding '<iterator> in <lower>..<upper>' of an aggregation, with its conditions
+    array_binding, // a binding '<iterator> in <array>' of an aggregation, with its conditions
+    such_that, // helper for aggregations, '|' separator
+    range, // helper for bindings, '..' separator
+    iterator, // the iterator of a binding
+    path, // an access path '<name>( .<field> | [<expression>] )*' resolved as a value
+    collection_path, // an access path resolved as an array
     negate,
     logical_not,
     logical_and,
@@ -270,9 +313,14 @@ constexpr auto typeName = std::to_array<std::string_view> ({
     "sequence", // a block encapsulated in '[' and ']'
     "function_call",  // a function call of the form '<function_name>(...)'
     "aggregation", // an aggregate operation of the form '<operation_name>{...}'
-    "filtered_aggregation", // a filtered aggregate operation of the form '<operation_name>{ <var> in <collection> | <conditions> }'
-    "such_that", // helper for filtered aggregation, '|' separator
-    "index",  // an indexing operation of the form '<variable_name>[...]'
+    "aggregation_over", // an aggregation of the form '<operation_name>{ <expression> | <bindings>, <conditions> }'
+    "range_binding", // a binding '<iterator> in <lower>..<upper>' of an aggregation, with its conditions
+    "array_binding", // a binding '<iterator> in <array>' of an aggregation, with its conditions
+    "such_that", // helper for aggregations, '|' separator
+    "range", // helper for bindings, '..' separator
+    "iterator", // the iterator of a binding
+    "path", // an access path '<name>( .<field> | [<expression>] )*' resolved as a value
+    "collection_path", // an access path resolved as an array
     "negate",
     "logical_not",
     "logical_and",
@@ -308,7 +356,7 @@ constexpr auto keywords = std::to_array<std::string_view> ({ "false", "true" });
 constexpr auto ternary = std::to_array<std::string_view> ({ "if", "then", "else" });
 // Operator lists
 constexpr auto prefix = std::to_array<std::string_view>({ "!", "¬", "-" });
-constexpr auto infix = std::to_array<std::string_view>({ ",", "==", "!=", "<=", ">=", "<", ">", ":=", "≔", "+=", "-=", "*=", "/=", "+", "-", "*", "/", "^",  "&&", "||", "?", ":", "and", "or", "in", "not in", "≠", "≤", "≥", "∧", "∨", "∈", "∉", "|" });
+constexpr auto infix = std::to_array<std::string_view>({ ",", "..", "==", "!=", "<=", ">=", "<", ">", ":=", "≔", "+=", "-=", "*=", "/=", "+", "-", "*", "/", "^",  "&&", "||", "?", ":", "and", "or", "in", "not in", "≠", "≤", "≥", "∧", "∨", "∈", "∉", "|" });
 constexpr auto postfix = std::to_array<std::string_view>({ "²", "³" });
 constexpr auto symbolic_names = std::to_array<std::string_view>({ "∑", "√", "∛" });
 const std::unordered_map<std::string, std::string> aliases = {
@@ -350,6 +398,7 @@ const std::unordered_map<std::string, Type> infixTypes = {
     {"not in", Type::not_element_of},
     {"∉", Type::not_element_of},
     {"|", Type::such_that},
+    {"..", Type::range},
     {std::string(ternary[1]), Type::_then_},
     {std::string(ternary[2]), Type::_else},
     {"?", Type::_then_},
@@ -373,7 +422,6 @@ const std::unordered_map<Type, unsigned int> precedences = {
 
     {Type::function_call, 1},
     {Type::aggregation, 1},
-    {Type::index, 1},
 
     {Type::square, 2},
     {Type::cube, 2},
@@ -438,7 +486,9 @@ inline std::string Token::stringify(int indent) const {
     case Type::SEQUENCE: result += "SEQUENCE"; break;
     case Type::FUNCTION_CALL: result += "FUNCTION_CALL"; break;
     case Type::AGGREGATION: result += "AGGREGATION"; break;
-    case Type::INDEXED_VARIABLE: result += "INDEXED_VARIABLE"; break;
+    case Type::PATH: result += "PATH"; break;
+    case Type::FIELD: result += "FIELD"; break;
+    case Type::INDEX: result += "INDEX"; break;
   }
   result += ", Value: " + value + '\n';
 
@@ -503,11 +553,11 @@ Node<T,C>::Node(Expression<T,C>* expression, const Node<U>& other)
 }
 
 template <typename T, typename C>
-inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const std::vector<C>& collectionValues) const {
+inline T Node<T,C>::evaluate( Context<T,C>& context ) const {
 //std::cerr << "Type: "<< typeName[(int)type] << std::endl;
   switch (type) {
     case Type::group:
-      return std::get<Node>(operands[0]).evaluate(variableValues,collectionValues);
+      return std::get<Node>(operands[0]).evaluate(context);
     case Type::set:
       throw std::runtime_error("LIMEX: Sets cannot be evaluated");
     case Type::sequence:
@@ -515,51 +565,51 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const std::v
     case Type::literal:
       return std::get<double>(operands[0]);
     case Type::variable: {
-      return variableValues[std::get<size_t>(operands[0])];
+      return context.variableValues[std::get<size_t>(operands[0])];
     }
     case Type::collection: {
       throw std::runtime_error("LIMEX: Collections cannot be evaluated");
     }
     case Type::negate: {
-      auto operandValue = std::get<Node>(operands[0]).evaluate(variableValues,collectionValues);
+      auto operandValue = std::get<Node>(operands[0]).evaluate(context);
       return -operandValue;
     }
 
     case Type::logical_not: {
-      auto operandValue = std::get<Node>(operands[0]).evaluate(variableValues,collectionValues);
+      auto operandValue = std::get<Node>(operands[0]).evaluate(context);
       return !operandValue;
     }
 
     case Type::logical_and: {
-      auto left = std::get<Node>(operands[0]).evaluate(variableValues,collectionValues);
-      auto right = std::get<Node>(operands[1]).evaluate(variableValues,collectionValues);
+      auto left = std::get<Node>(operands[0]).evaluate(context);
+      auto right = std::get<Node>(operands[1]).evaluate(context);
       return left && right;
     }
 
     case Type::logical_or: {
-      auto left = std::get<Node>(operands[0]).evaluate(variableValues,collectionValues);
-      auto right = std::get<Node>(operands[1]).evaluate(variableValues,collectionValues);
+      auto left = std::get<Node>(operands[0]).evaluate(context);
+      auto right = std::get<Node>(operands[1]).evaluate(context);
       return left || right;
     }
     case Type::add: {
-      auto left = std::get<Node>(operands[0]).evaluate(variableValues,collectionValues);
-      auto right = std::get<Node>(operands[1]).evaluate(variableValues,collectionValues);
+      auto left = std::get<Node>(operands[0]).evaluate(context);
+      auto right = std::get<Node>(operands[1]).evaluate(context);
       return left + right;
     }
     case Type::subtract: {
-      auto left = std::get<Node>(operands[0]).evaluate(variableValues,collectionValues);
-      auto right = std::get<Node>(operands[1]).evaluate(variableValues,collectionValues);
+      auto left = std::get<Node>(operands[0]).evaluate(context);
+      auto right = std::get<Node>(operands[1]).evaluate(context);
       return left - right;
     }
 
     case Type::multiply: {
-      auto left = std::get<Node>(operands[0]).evaluate(variableValues,collectionValues);
-      auto right = std::get<Node>(operands[1]).evaluate(variableValues,collectionValues);
+      auto left = std::get<Node>(operands[0]).evaluate(context);
+      auto right = std::get<Node>(operands[1]).evaluate(context);
       return left * right;
     }
     case Type::divide: {
-      auto left = std::get<Node>(operands[0]).evaluate(variableValues,collectionValues);
-      auto right = std::get<Node>(operands[1]).evaluate(variableValues,collectionValues);
+      auto left = std::get<Node>(operands[0]).evaluate(context);
+      auto right = std::get<Node>(operands[1]).evaluate(context);
       
       if constexpr (std::is_arithmetic_v<T>) {
         if (right == 0) {
@@ -570,11 +620,11 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const std::v
       return left / right;
     }
     case Type::square: {
-      auto value = std::get<Node>(operands[0]).evaluate(variableValues,collectionValues);
+      auto value = std::get<Node>(operands[0]).evaluate(context);
       return value * value;
     }
     case Type::cube: {
-      auto value = std::get<Node>(operands[0]).evaluate(variableValues,collectionValues);
+      auto value = std::get<Node>(operands[0]).evaluate(context);
       return value * value * value;
     }
     case Type::exponentiate: {
@@ -586,7 +636,7 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const std::v
       std::vector<T> arguments;
       for (size_t i = 0; i < operands.size(); ++i) {
         arguments.push_back(
-          std::get<Node>(operands[i]).evaluate(variableValues,collectionValues)
+          std::get<Node>(operands[i]).evaluate(context)
         );
       }
       // Call pow function
@@ -602,7 +652,7 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const std::v
       std::vector<T> arguments;
       for (size_t i = 1; i < operands.size(); ++i) {
         arguments.push_back(
-          std::get<Node>(operands[i]).evaluate(variableValues,collectionValues)
+          std::get<Node>(operands[i]).evaluate(context)
         );
       }
       return expression->handle.functionImplementations[index](arguments);
@@ -616,18 +666,18 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const std::v
       if (
         operands.size() == 2 &&
         std::holds_alternative<Node>(operands[1]) &&
-        std::get<Node>(operands[1]).type == Type::collection
+        ( std::get<Node>(operands[1]).type == Type::collection || std::get<Node>(operands[1]).type == Type::collection_path )
       ) {
-        // argument is a collection
-        auto collection = std::get<size_t>(std::get<Node>(operands[1]).operands[0]);
+        // argument is a collection or a path resolved as an array
+        C collection = std::get<Node>(operands[1]).evaluateCollection(context);
 
         if constexpr (std::is_same_v< C, View<T> >) {
           // collection type C is View<T>, which the aggregator takes as it is
-          return expression->handle.aggregatorImplementations[index](collectionValues[collection]);
+          return expression->handle.aggregatorImplementations[index](collection);
         }
         else if constexpr (std::is_same_v< C, T >) {
           // collection type C is T
-          return expression->handle.aggregateEvaluation(expression->handle.getAggregatorNames()[index], collectionValues[collection]);
+          return expression->handle.aggregateEvaluation(expression->handle.getAggregatorNames()[index], collection);
         }
         else {
           static_assert([]{ return false; }(), "LIMEX: unexpected collection type");
@@ -638,123 +688,121 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const std::v
         std::vector<T> arguments;
         for (size_t i = 1; i < operands.size(); ++i) {
           arguments.push_back(
-            std::get<Node>(operands[i]).evaluate(variableValues,collectionValues)
+            std::get<Node>(operands[i]).evaluate(context)
           );
         }
         return expression->handle.aggregatorImplementations[index](arguments);
       }
     }
-    case Type::filtered_aggregation:
+    case Type::aggregation_over:
     {
-      size_t aggrIndex = std::get<size_t>(operands[0]);
-      size_t collIndex = std::get<size_t>(operands[1]);
-      const auto& conditions = std::get<Node>(operands[2]);
-
-      const C& collection = collectionValues[collIndex];
-
-      return expression->handle.filteredAggregateEvaluation(
-        expression->handle.getAggregatorNames()[aggrIndex],
-        collection,
-        conditions,
-        variableValues,
-        collectionValues
-      );
-    }
-    case Type::index: 
-    {
-      size_t collection = std::get<size_t>(operands[0]);
-      if (collection >= expression->getCollections().size()) {
-        throw std::runtime_error("LIMEX: Illegal reference to collection");
-      }
-      if (collection >= collectionValues.size()) {
-        throw std::runtime_error("LIMEX: Insufficient collections provided");
-      }
-      if (!std::holds_alternative<Node>(operands[1])) {
-        throw std::logic_error("LIMEX: Unexpected operand");
-      }
-      if constexpr (std::is_same_v< C, View<T> >) {
-        // collection type C is View<T>
-        if ( std::get<Node>(operands[1]).type == Type::literal ) {
-          // index is given as a literal 
-          auto value = std::get<double>(std::get<Node>(operands[1]).operands[0]);        
-          auto index = (size_t)value - 1;
-          if (index >= collectionValues[collection].size()) {
-            throw std::runtime_error("LIMEX: Illegal index for collection");
-          }
-          return collectionValues[collection][index];
+      if constexpr (std::is_arithmetic_v<T>) {
+        size_t index = std::get<size_t>(operands[0]);
+        if (index >= expression->handle.getAggregatorNames().size()) {
+          throw std::runtime_error("LIMEX: Aggregator index out of range");
         }
-        else {
-          // index is not given as a literal and has to be determined through evaluation
-          auto value = std::get<Node>(operands[1]).evaluate(variableValues,collectionValues); 
-                 
-          if constexpr (std::is_arithmetic_v<T>) {
-            // arithmetic value can be cast to index 
-            auto index = (size_t)value - 1;
-            if (index >= collectionValues[collection].size()) {
-              throw std::runtime_error("LIMEX: Illegal index for collection");
-            }
-            return collectionValues[collection][index];
+        const Node& body = std::get<Node>(operands[1]);
+        // the values of the expression for every combination of iterator values satisfying the conditions,
+        // the bindings being nested in their order and each condition checked once the iterators it reads are
+        // bound
+        std::vector<T> values;
+        std::function<void(size_t)> iterate = [&](size_t position) {
+          if (position == operands.size()) {
+            values.push_back(body.evaluate(context));
+            return;
           }
-          else if constexpr ( requires { std::declval<T>() == std::declval<T>(); } ) {
-            // operator== is available for T and n-ary if statement can be constructed
-            auto index = expression->handle.getFunctionIndex("n_ary_if");
-            if (index >= expression->handle.getFunctionNames().size()) {
-              throw std::runtime_error("LIMEX: Function index out of range");
+          const Node& binding = std::get<Node>(operands[position]);
+          size_t slot = std::get<size_t>(binding.operands[0]);
+          size_t firstCondition = ( binding.type == Type::range_binding ? 3 : 2 );
+          auto proceed = [&](T value) {
+            context.iteratorValues[slot] = value;
+            for (size_t i = firstCondition; i < binding.operands.size(); ++i) {
+              if ( !std::get<Node>(binding.operands[i]).evaluate(context) ) {
+                return;
+              }
             }
-            // collect arguments for n-ary if statement
-            std::vector<T> arguments;
-            for ( size_t i = 0; i < collectionValues[collection].size(); i++ ) {
-              arguments.emplace_back( value == i+1 );
-              arguments.emplace_back( collectionValues[collection][i] );
+            iterate(position + 1);
+          };
+          if (binding.type == Type::range_binding) {
+            T lower = std::get<Node>(binding.operands[1]).evaluate(context);
+            T upper = std::get<Node>(binding.operands[2]).evaluate(context);
+            if constexpr (std::is_floating_point_v<T>) {
+              if ( std::isnan(lower) || std::isnan(upper) ) {
+                // an undefined bound gives an empty range
+                return;
+              }
+              lower = std::ceil(lower);
             }
-            arguments.emplace_back( false ); // the else result should never occur
-            return expression->handle.functionImplementations[index](arguments);
+            for (T value = lower; value <= upper; value += 1) {
+              proceed(value);
+            }
           }
           else {
-            throw std::logic_error("LIMEX: operator== is undefined");
+            C collection = std::get<Node>(binding.operands[1]).evaluateCollection(context);
+            for (T value : collection) {
+              if constexpr (std::is_floating_point_v<T>) {
+                if ( std::isnan(value) ) {
+                  // undefined elements are skipped
+                  continue;
+                }
+              }
+              proceed(value);
+            }
           }
-        }
-      }
-      else if constexpr (std::is_same_v< C, T >) {
-        // CP::Expression: call specialized indexedEvaluation()
-        auto collectionIndex = std::get<Node>(operands[1]).evaluate(variableValues, collectionValues);
-        return expression->handle.indexedEvaluation(collectionValues[collection], collectionIndex);
+        };
+        iterate(2);
+        return expression->handle.aggregatorImplementations[index](View<T>(values));
       }
       else {
-        static_assert([]{ return false; }(), "LIMEX: unexpected collection type");
+        throw std::logic_error("LIMEX: Aggregation over an expression requires an arithmetic value type");
       }
     }
+    case Type::range_binding:
+    case Type::array_binding:
+    case Type::range:
+    case Type::such_that:
+      throw std::logic_error("LIMEX: Bindings are evaluated by their aggregation");
+    case Type::iterator:
+      return context.iteratorValues[std::get<size_t>(operands[0])];
+    case Type::path:
+    {
+      size_t path = std::get<size_t>(operands[0]);
+      if (!context.resolver.value) {
+        throw std::runtime_error("LIMEX: No resolver provided for path '" + expression->paths[path].name + "'");
+      }
+      return context.resolver.value(path, evaluateIndices(context));
+    }
+    case Type::collection_path:
+      throw std::runtime_error("LIMEX: Arrays cannot be evaluated");
     case Type::element_of: {
-      T element = std::get<Node>(operands[0]).evaluate(variableValues, collectionValues);
+      T element = std::get<Node>(operands[0]).evaluate(context);
       auto& rhs = std::get<Node>(operands[1]);
-      if (rhs.type == Type::collection) {
-        // External collection reference - use membershipEvaluation
-        size_t collIdx = std::get<size_t>(rhs.operands[0]);
-        return expression->handle.membershipEvaluation("element_of", element, collectionValues[collIdx]);
+      if (rhs.type == Type::collection || rhs.type == Type::collection_path) {
+        // External collection or path resolved as an array - use membershipEvaluation
+        return expression->handle.membershipEvaluation("element_of", element, rhs.evaluateCollection(context));
       }
       else {
         // Inline set - collect arguments and call aggregator
         std::vector<T> arguments = { element };
         for (auto& elem : rhs.operands) {
-          arguments.push_back(std::get<Node>(elem).evaluate(variableValues, collectionValues));
+          arguments.push_back(std::get<Node>(elem).evaluate(context));
         }
         return expression->handle.aggregatorImplementations[
           expression->handle.getAggregatorIndex("element_of")](arguments);
       }
     }
     case Type::not_element_of: {
-      T element = std::get<Node>(operands[0]).evaluate(variableValues, collectionValues);
+      T element = std::get<Node>(operands[0]).evaluate(context);
       auto& rhs = std::get<Node>(operands[1]);
-      if (rhs.type == Type::collection) {
-        // External collection reference - use membershipEvaluation
-        size_t collIdx = std::get<size_t>(rhs.operands[0]);
-        return expression->handle.membershipEvaluation("not_element_of", element, collectionValues[collIdx]);
+      if (rhs.type == Type::collection || rhs.type == Type::collection_path) {
+        // External collection or path resolved as an array - use membershipEvaluation
+        return expression->handle.membershipEvaluation("not_element_of", element, rhs.evaluateCollection(context));
       }
       else {
         // Inline set - collect arguments and call aggregator
         std::vector<T> arguments = { element };
         for (auto& elem : rhs.operands) {
-          arguments.push_back(std::get<Node>(elem).evaluate(variableValues, collectionValues));
+          arguments.push_back(std::get<Node>(elem).evaluate(context));
         }
         return expression->handle.aggregatorImplementations[
           expression->handle.getAggregatorIndex("not_element_of")](arguments);
@@ -769,7 +817,7 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const std::v
       std::vector<T> arguments;
       for (size_t i = 0; i < operands.size(); ++i) {
         arguments.push_back(
-          std::get<Node>(operands[i]).evaluate(variableValues,collectionValues)
+          std::get<Node>(operands[i]).evaluate(context)
         );
       }
       // Call the function
@@ -777,73 +825,115 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const std::v
     }
     case Type::less_than:
     {
-      auto left = std::get<Node>(operands[0]).evaluate(variableValues,collectionValues);
-      auto right = std::get<Node>(operands[1]).evaluate(variableValues,collectionValues);
+      auto left = std::get<Node>(operands[0]).evaluate(context);
+      auto right = std::get<Node>(operands[1]).evaluate(context);
       return left < right;
     }
     case Type::less_or_equal:
     {
-      auto left = std::get<Node>(operands[0]).evaluate(variableValues,collectionValues);
-      auto right = std::get<Node>(operands[1]).evaluate(variableValues,collectionValues);
+      auto left = std::get<Node>(operands[0]).evaluate(context);
+      auto right = std::get<Node>(operands[1]).evaluate(context);
       return left <= right;
     }
     case Type::greater_than:
     {
-      auto left = std::get<Node>(operands[0]).evaluate(variableValues,collectionValues);
-      auto right = std::get<Node>(operands[1]).evaluate(variableValues,collectionValues);
+      auto left = std::get<Node>(operands[0]).evaluate(context);
+      auto right = std::get<Node>(operands[1]).evaluate(context);
       return left > right;
     }
     case Type::greater_or_equal:
     {
-      auto left = std::get<Node>(operands[0]).evaluate(variableValues,collectionValues);
-      auto right = std::get<Node>(operands[1]).evaluate(variableValues,collectionValues);
+      auto left = std::get<Node>(operands[0]).evaluate(context);
+      auto right = std::get<Node>(operands[1]).evaluate(context);
       return left >= right;
     }
     case Type::equal_to:
     {
-      auto left = std::get<Node>(operands[0]).evaluate(variableValues,collectionValues);
-      auto right = std::get<Node>(operands[1]).evaluate(variableValues,collectionValues);
+      auto left = std::get<Node>(operands[0]).evaluate(context);
+      auto right = std::get<Node>(operands[1]).evaluate(context);
       return left == right;
     }
     case Type::not_equal_to:
     {
-      auto left = std::get<Node>(operands[0]).evaluate(variableValues,collectionValues);
-      auto right = std::get<Node>(operands[1]).evaluate(variableValues,collectionValues);
+      auto left = std::get<Node>(operands[0]).evaluate(context);
+      auto right = std::get<Node>(operands[1]).evaluate(context);
       return left != right;
     }
     case Type::assign:
     {
-      auto result = std::get<Node>(operands[0]).evaluate(variableValues,collectionValues);
+      auto result = std::get<Node>(operands[0]).evaluate(context);
       return result;
     }
     case Type::add_assign:
     {
-      auto left = std::get<Node>(operands[0]).evaluate(variableValues,collectionValues);
-      auto right = std::get<Node>(operands[1]).evaluate(variableValues,collectionValues);
+      auto left = std::get<Node>(operands[0]).evaluate(context);
+      auto right = std::get<Node>(operands[1]).evaluate(context);
       return left + right;
     }
     case Type::subtract_assign:
     {
-      auto left = std::get<Node>(operands[0]).evaluate(variableValues,collectionValues);
-      auto right = std::get<Node>(operands[1]).evaluate(variableValues,collectionValues);
+      auto left = std::get<Node>(operands[0]).evaluate(context);
+      auto right = std::get<Node>(operands[1]).evaluate(context);
       return left - right;
     }
     case Type::multiply_assign:
     {
-      auto left = std::get<Node>(operands[0]).evaluate(variableValues,collectionValues);
-      auto right = std::get<Node>(operands[1]).evaluate(variableValues,collectionValues);
+      auto left = std::get<Node>(operands[0]).evaluate(context);
+      auto right = std::get<Node>(operands[1]).evaluate(context);
       return left * right;
     }
     case Type::divide_assign:
     {
-      auto left = std::get<Node>(operands[0]).evaluate(variableValues,collectionValues);
-      auto right = std::get<Node>(operands[1]).evaluate(variableValues,collectionValues);
+      auto left = std::get<Node>(operands[0]).evaluate(context);
+      auto right = std::get<Node>(operands[1]).evaluate(context);
       return left / right;
     }
     default:
       throw std::runtime_error("LIMEX: Unsupported type '" + std::string(typeName[(int)type]) + "'in evaluate");
   }
 };
+
+template <typename T, typename C>
+inline std::vector<T> Node<T,C>::evaluateIndices( Context<T,C>& context ) const {
+  std::vector<T> indices;
+  indices.reserve(operands.size() - 1);
+  for (size_t i = 1; i < operands.size(); ++i) {
+    indices.push_back( std::get<Node>(operands[i]).evaluate(context) );
+  }
+  return indices;
+}
+
+template <typename T, typename C>
+inline C Node<T,C>::evaluateCollection( Context<T,C>& context ) const {
+  if (type == Type::collection) {
+    size_t collection = std::get<size_t>(operands[0]);
+    if (collection >= context.collectionValues.size()) {
+      throw std::runtime_error("LIMEX: Insufficient collections provided");
+    }
+    return context.collectionValues[collection];
+  }
+  if (type == Type::collection_path) {
+    size_t path = std::get<size_t>(operands[0]);
+    if (!context.resolver.collection) {
+      throw std::runtime_error("LIMEX: No resolver provided for array '" + expression->paths[path].name + "'");
+    }
+    return context.resolver.collection(path, evaluateIndices(context));
+  }
+  throw std::logic_error("LIMEX: Node is not an array");
+}
+
+template <typename T, typename C>
+inline bool Node<T,C>::usesIterator( size_t slot ) const {
+  if (type == Type::iterator && std::get<size_t>(operands[0]) == slot) {
+    return true;
+  }
+  for (const auto& operand : operands) {
+    if (std::holds_alternative<Node>(operand) && std::get<Node>(operand).usesIterator(slot)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 template <typename T, typename C>
 inline std::string Node<T,C>::stringify() const {
@@ -862,17 +952,16 @@ inline std::string Node<T,C>::stringify() const {
       else if ( type == Type::collection ) {
         result += expression->collections.at(std::get<size_t>(operand)) + ", ";
       }
-      else if ( type == Type::index ) {
-        result += expression->collections.at(std::get<size_t>(operand)) + ", ";
+      else if ( type == Type::path || type == Type::collection_path ) {
+        result += expression->paths.at(std::get<size_t>(operand)).name + ", ";
       }
-      else if ( type == Type::filtered_aggregation && i == 1 ) {
-        // operands[1] is collection index for filtered_aggregation
-        result += expression->collections.at(std::get<size_t>(operand)) + ", ";
+      else if ( type == Type::iterator || type == Type::range_binding || type == Type::array_binding ) {
+        result += expression->iterators.at(std::get<size_t>(operand)) + ", ";
       }
       else if ( type == Type::function_call ) {
         result += expression->handle.getFunctionNames().at(std::get<size_t>(operand)) + ", ";
       }
-      else if ( type == Type::aggregation || type == Type::filtered_aggregation ) {
+      else if ( type == Type::aggregation || type == Type::aggregation_over ) {
         result += expression->handle.getAggregatorNames().at(std::get<size_t>(operand)) + ", ";
       }
       else {
@@ -902,8 +991,33 @@ Expression<T,C>::Expression(const std::string& expression, const Handle<T,C>& ha
 }
 
 template <typename T, typename C>
-inline T Expression<T,C>::evaluate( const std::vector<T>& variableValues, const std::vector<C>& collectionValues) const {
-  return root.evaluate(variableValues,collectionValues);
+inline T Expression<T,C>::evaluate( const std::vector<T>& variableValues, const std::vector<C>& collectionValues, const Resolver<T,C>& resolver) const {
+  Context<T,C> context{ variableValues, collectionValues, resolver, std::vector<T>(iterators.size()) };
+  return root.evaluate(context);
+}
+
+template <typename T, typename C>
+inline std::vector<T> Expression<T,C>::evaluateTargetIndices( const std::vector<T>& variableValues, const std::vector<C>& collectionValues, const Resolver<T,C>& resolver) const {
+  if (!targetPath.has_value()) {
+    return {};
+  }
+  Context<T,C> context{ variableValues, collectionValues, resolver, std::vector<T>(iterators.size()) };
+  // the root is a group holding the assignment, which keeps the target path as its last operand for ':=' and
+  // as its first operand for a compound assignment
+  const Node<T,C>& assignment = std::get< Node<T,C> >(root.operands[0]);
+  const Node<T,C>& path = std::get< Node<T,C> >( assignment.type == Type::assign ? assignment.operands[1] : assignment.operands[0] );
+  return path.evaluateIndices(context);
+}
+
+template <typename T, typename C>
+inline std::optional<size_t> Expression<T,C>::boundIterator(const std::string& name) const {
+  // the innermost binding of the name, if it is bound by an enclosing aggregation
+  for (auto scope = scopes.rbegin(); scope != scopes.rend(); ++scope) {
+    if (auto it = scope->find(name); it != scope->end()) {
+      return it->second;
+    }
+  }
+  return std::nullopt;
 }
 
 template <typename T, typename C>
@@ -966,7 +1080,7 @@ inline Token Expression<T,C>::tokenize(const std::string& input) {
       else if ( isnumeric( input[pos] ) ) {
         // Consume numbers
         std::string number;
-        while (pos < input.length() && isnumeric( input[pos] ) ) {
+        while (pos < input.length() && isnumeric( input[pos] ) && !startsWith(input,pos,"..") ) {
           number += input[pos++];
         }
         expected = Token::Category::POSTFIX;
@@ -990,12 +1104,13 @@ inline Token Expression<T,C>::tokenize(const std::string& input) {
           expected = Token::Category::OPERAND;
           groupStack.top().first->children.emplace_back(Token::Category::OPERAND, Token::Type::COLLECTION, name);
         }
-        else if ( pos < input.length() && input[pos] == '[' ) {
-          ++pos;
-          expected = Token::Category::PREFIX;
-          groupStack.top().first->children.emplace_back(Token::Category::OPERAND, Token::Type::INDEXED_VARIABLE, name);
-          groupStack.emplace(&groupStack.top().first->children.back(),"]");
-          continue;
+        else if (
+          pos < input.length() &&
+          ( input[pos] == '[' || ( input[pos] == '.' && pos + 1 < input.length() && isNameStart(input[pos+1]) ) )
+        ) {
+          // a name followed by an index or a field begins an access path
+          groupStack.top().first->children.push_back( readPath(input, pos, name) );
+          expected = Token::Category::POSTFIX;
         }
         else if ( pos < input.length() && input[pos] == '{' ) {
           ++pos;
@@ -1146,6 +1261,49 @@ inline Token Expression<T,C>::tokenize(const std::string& input) {
 }
 
 template <typename T, typename C>
+inline Token Expression<T,C>::readPath(const std::string& input, size_t& pos, std::string name) {
+  Token path(Token::Category::OPERAND, Token::Type::PATH, std::move(name));
+  while (pos < input.length()) {
+    if (input[pos] == '[') {
+      // an index, whose expression is tokenized on its own
+      size_t start = ++pos;
+      size_t depth = 1;
+      while (pos < input.length() && depth > 0) {
+        if (input[pos] == '[') {
+          ++depth;
+        }
+        else if (input[pos] == ']') {
+          --depth;
+        }
+        ++pos;
+      }
+      if (depth > 0) {
+        throw std::runtime_error("LIMEX: Unbalanced brackets in path: " + input.substr(0,pos));
+      }
+      Token index = tokenize(input.substr(start, pos - 1 - start));
+      if (index.children.empty()) {
+        throw std::runtime_error("LIMEX: Empty index in path: " + input.substr(0,pos));
+      }
+      index.type = Token::Type::INDEX;
+      path.children.push_back(std::move(index));
+    }
+    else if (input[pos] == '.' && pos + 1 < input.length() && isNameStart(input[pos+1])) {
+      // a field
+      std::string field;
+      ++pos;
+      while (pos < input.length() && isalphanumeric(input[pos])) {
+        field += input[pos++];
+      }
+      path.children.emplace_back(Token::Category::OPERAND, Token::Type::FIELD, std::move(field));
+    }
+    else {
+      break;
+    }
+  }
+  return path;
+}
+
+template <typename T, typename C>
 inline size_t Expression<T,C>::skipWhitespaces(const std::string& input, size_t& pos) {
   // Skip whitespaces
   while ( pos < input.length() && std::isspace( input[pos] ) ) {
@@ -1203,12 +1361,40 @@ inline Node<T,C> Expression<T,C>::buildTree( Type type, const std::vector<Token>
   std::stack< Node<T,C> > nodeStack;
   std::stack< Type > operatorStack;
 
-  auto createNode = [&](const Token& token) {
+  std::function<Node<T,C>(const Token&)> createNode = [&](const Token& token) -> Node<T,C> {
     switch (token.type) {
       case Token::Type::NUMBER:
         return Node<T,C>(this, std::stod(token.value));
       case Token::Type::VARIABLE:
+        if ( auto slot = boundIterator(token.value) ) {
+          // the iterator of an enclosing aggregation
+          return Node<T,C>(this, Type::iterator, std::vector<std::variant<double, size_t, Node<T,C>>>{ slot.value() });
+        }
         return Node<T,C>(this, Type::variable, token.value);
+      case Token::Type::PATH:
+      {
+        if ( boundIterator(token.value) ) {
+          throw std::runtime_error("LIMEX: Iterator '" + token.value + "' cannot be indexed or have fields");
+        }
+        // the index expressions are built first, so that the paths they contain precede this one
+        Path description{ token.value, {} };
+        std::vector<std::variant<double, size_t, Node<T,C>>> indices;
+        for (const auto& step : token.children) {
+          if (step.type == Token::Type::FIELD) {
+            description.steps.emplace_back(step.value);
+          }
+          else {
+            description.steps.emplace_back(std::nullopt);
+            indices.emplace_back( buildTree(Type::group, step.children) );
+          }
+        }
+        paths.push_back(std::move(description));
+        std::vector<std::variant<double, size_t, Node<T,C>>> pathOperands{ paths.size() - 1 };
+        for (auto& indexNode : indices) {
+          pathOperands.push_back(std::move(indexNode));
+        }
+        return Node<T,C>(this, Type::path, std::move(pathOperands));
+      }
       case Token::Type::COLLECTION:
         return Node<T,C>(this, Type::collection, token.value);
       case Token::Type::GROUP:
@@ -1219,95 +1405,34 @@ inline Node<T,C> Expression<T,C>::buildTree( Type type, const std::vector<Token>
         return buildTree(Type::sequence, token.children);    
       case Token::Type::FUNCTION_CALL:
         if (handle.isAggregator(token.value)) {
-          // aggr(X) - aggregation over collection
-          if (token.children.size() != 1 || token.children[0].type != Token::Type::VARIABLE) {
+          // aggr(X) - aggregation over a collection or over the array a path addresses
+          if (
+            token.children.size() != 1 ||
+            ( token.children[0].type != Token::Type::VARIABLE && token.children[0].type != Token::Type::PATH ) ||
+            boundIterator(token.children[0].value)
+          ) {
             throw std::runtime_error("LIMEX: Aggregator with () requires single collection");
           }
           size_t aggrIdx = handle.getAggregatorIndex(token.value);
-          size_t collIdx = getIndex(collections, token.children[0].value);
-          Node<T,C> collNode(this, Type::collection, std::vector<std::variant<double, size_t, Node<T,C>>>{ collIdx });
+          Node<T,C> collNode = ( token.children[0].type == Token::Type::PATH ? createNode(token.children[0]) : Node<T,C>(this, Type::collection, std::vector<std::variant<double, size_t, Node<T,C>>>{ getIndex(collections, token.children[0].value) }) );
+          if (collNode.type == Type::path) {
+            collNode.type = Type::collection_path;
+          }
           return Node<T,C>(this, Type::aggregation, std::vector<std::variant<double, size_t, Node<T,C>>>{ aggrIdx, std::move(collNode) });
         }
         return buildTree(Type::function_call, token.children, handle.getFunctionIndex(token.value));    
       case Token::Type::AGGREGATION:
       {
         const auto& children = token.children;
-
-        // Detect filtered aggregation pattern: '<var> in <collection> |'
-        if ( 
-          children.size() >= 5 &&
-          children[0].type == Token::Type::VARIABLE &&
-          children[1].type == Token::Type::OPERATOR && infixTypes.at(children[1].value) == Type::element_of &&
-          children[2].type == Token::Type::COLLECTION &&
-          children[3].type == Token::Type::OPERATOR && infixTypes.at(children[3].value) == Type::such_that
-        ) {
-          std::string iteratorName = children[0].value;
-
-          // Disallow shadowing (but allow iterator reuse)
-          bool isIteratorReuse = iteratorVariables.contains(iteratorName);
-          auto inVariables = std::find(variables.begin(), variables.end(), iteratorName) != variables.end();
-          auto inCollections = std::find(collections.begin(), collections.end(), iteratorName) != collections.end();
-          if ((inVariables && !isIteratorReuse) || inCollections) {
-            throw std::runtime_error("LIMEX: Iteration variable '" + iteratorName + "' shadows existing identifier");
-          }
-
-          // Collect condition tokens (everything after '|', split by ',')
-          std::vector<std::vector<Token>> conditionTokenGroups;
-          conditionTokenGroups.emplace_back();
-          for (size_t i = 4; i < children.size(); ++i) {
-            if (children[i].type == Token::Type::SEPARATOR && children[i].value == ",") {
-              conditionTokenGroups.emplace_back();
-            }
-            else {
-              conditionTokenGroups.back().push_back(children[i]);
-            }
-          }
-
-          // Pre-scan condition tokens to collect all variable names
-          std::set<std::string> conditionVarNames;
-          for (const auto& group : conditionTokenGroups) {
-            collectVariableNames(group, conditionVarNames);
-          }
-
-          // Add external variables FIRST (all except iterator)
-          for (const auto& varName : conditionVarNames) {
-            if (varName != iteratorName) {
-              getIndex(variables, varName);
-            }
-          }
-
-          // Add iterator LAST and track it
-          getIndex(variables, iteratorName);
-          iteratorVariables.insert(iteratorName);
-
-          // Build and AND conditions together
-          Node<T,C> conditions = buildTree(Type::group, conditionTokenGroups[0]);
-          for (size_t i = 1; i < conditionTokenGroups.size(); ++i) {
-            Node<T,C> nextCondition = buildTree(Type::group, conditionTokenGroups[i]);
-            conditions = Node<T,C>(this, Type::logical_and,
-              { std::move(conditions), std::move(nextCondition) });
-          }
-
-          // DON'T erase iterator - indices must stay stable
-
-          // Build filtered_aggregation node: { aggrIndex, collIndex, conditions }
-          size_t aggrIdx = handle.getAggregatorIndex(token.value);
-          size_t collIdx = getIndex(collections, children[2].value);
-          return Node<T,C>(this, Type::filtered_aggregation,
-            { aggrIdx, collIdx, std::move(conditions) });
+        bool over = std::ranges::any_of(children, [](const Token& child) {
+          return child.type == Token::Type::OPERATOR && child.value == "|";
+        });
+        if (over) {
+          // aggr{ expression | bindings, conditions }
+          return buildAggregationOver(token);
         }
-
-        // Check if '|' (such_that) is used but filtered aggregation pattern wasn't matched
-        for (const auto& child : children) {
-          if (child.type == Token::Type::OPERATOR && infixTypes.count(child.value) && infixTypes.at(child.value) == Type::such_that) {
-            throw std::runtime_error("LIMEX: Filtered aggregation requires syntax: aggr{ var in collection | conditions }");
-          }
-        }
-
         return buildTree(Type::aggregation, token.children, handle.getAggregatorIndex(token.value));
       }
-      case Token::Type::INDEXED_VARIABLE:
-        return buildTree(Type::index, token.children, getIndex(collections, token.value));
       default:
         throw std::logic_error("LIMEX: Unexpected token type for operand");
     }
@@ -1351,11 +1476,17 @@ inline Node<T,C> Expression<T,C>::buildTree( Type type, const std::vector<Token>
       nodeStack.pop();
       Node<T,C> left = std::move(nodeStack.top());
       nodeStack.pop();
-      if ( left.type != Type::variable ) {
+      if ( left.type != Type::variable && left.type != Type::path ) {
         throw std::runtime_error("LIMEX: illegal target for assignment");
       }
       if ( operatorType == Type::assign ) {
-        nodeStack.push(Node<T,C>(this,Type::assign, {std::move(right) }));
+        if ( left.type == Type::path ) {
+          // the target path is kept for the evaluation of its indices, but not read
+          nodeStack.push(Node<T,C>(this,Type::assign, {std::move(right), std::move(left) }));
+        }
+        else {
+          nodeStack.push(Node<T,C>(this,Type::assign, {std::move(right) }));
+        }
       }
       else {
         // add_assign, subtract_assign, multiply_assign, or divide_assign
@@ -1373,6 +1504,10 @@ inline Node<T,C> Expression<T,C>::buildTree( Type type, const std::vector<Token>
     Node<T,C> left = std::move(nodeStack.top());
     nodeStack.pop();
 
+    if ( ( operatorType == Type::element_of || operatorType == Type::not_element_of ) && right.type == Type::path ) {
+      // a path on the right of 'in' addresses an array
+      right.type = Type::collection_path;
+    }
     nodeStack.push(Node<T,C>(this,operatorType, {std::move(left), std::move(right)}));
     return;
   };
@@ -1419,11 +1554,22 @@ inline Node<T,C> Expression<T,C>::buildTree( Type type, const std::vector<Token>
     }
     else if ( tokens[i].category == Token::Category::INFIX ) {
       Type operatorType = infixTypes.at(tokens[i].value);
+      if ( operatorType == Type::such_that ) {
+        throw std::runtime_error("LIMEX: '|' is only allowed in an aggregation");
+      }
+      if ( operatorType == Type::range ) {
+        throw std::runtime_error("LIMEX: A range '..' is only allowed in a binding of an aggregation");
+      }
       if ( (int)operatorType >= (int)Type::assign ) {
-        if ( i != 1 ) {
-          throw std::runtime_error("LIMEX: Assignment must start with a variable followed by the assignment operator");
+        if ( i != 1 || ( tokens[0].type != Token::Type::VARIABLE && tokens[0].type != Token::Type::PATH ) ) {
+          throw std::runtime_error("LIMEX: Assignment must start with a variable or path followed by the assignment operator");
         }
-        if ( operatorType == Type::assign ) {
+        if ( tokens[0].type == Token::Type::PATH ) {
+          // the target path is the last path built, after the paths in its indices; the variables in its indices
+          // remain inputs
+          targetPath = paths.size() - 1;
+        }
+        else if ( operatorType == Type::assign ) {
           // remove target from the list of variables 
           variables.clear();
         }
@@ -1458,6 +1604,111 @@ inline Node<T,C> Expression<T,C>::buildTree( Type type, const std::vector<Token>
 
   operands.emplace_back( std::move(nodeStack.top()) );
   return Node<T,C>(this, type, operands);
+}
+
+template <typename T, typename C>
+inline Node<T,C> Expression<T,C>::buildAggregationOver( const Token& token ) {
+  const auto& children = token.children;
+  size_t aggregator = handle.getAggregatorIndex(token.value);
+  auto bar = std::ranges::find_if(children, [](const Token& child) {
+    return child.type == Token::Type::OPERATOR && child.value == "|";
+  });
+  std::vector<Token> bodyTokens(children.begin(), bar);
+  if (bodyTokens.empty()) {
+    throw std::runtime_error("LIMEX: Aggregation requires an expression before '|'");
+  }
+  // the parts after '|', separated by ','
+  std::vector< std::vector<Token> > parts(1);
+  for (auto it = bar + 1; it != children.end(); ++it) {
+    if (it->type == Token::Type::SEPARATOR && it->value == ",") {
+      parts.emplace_back();
+    }
+    else {
+      parts.back().push_back(*it);
+    }
+  }
+
+  scopes.emplace_back();
+  std::vector< Node<T,C> > bindings;
+  std::vector<size_t> slots;
+  size_t part = 0;
+  // the leading parts of the form '<name> in ...' whose name is not bound are bindings
+  for (; part < parts.size(); ++part) {
+    const auto& tokens = parts[part];
+    if (
+      tokens.size() < 3 ||
+      tokens[0].type != Token::Type::VARIABLE ||
+      tokens[1].type != Token::Type::OPERATOR ||
+      !infixTypes.contains(tokens[1].value) ||
+      infixTypes.at(tokens[1].value) != Type::element_of ||
+      boundIterator(tokens[0].value)
+    ) {
+      break;
+    }
+    const std::string& name = tokens[0].value;
+    if ( std::ranges::contains(variables, name) || std::ranges::contains(collections, name) ) {
+      throw std::runtime_error("LIMEX: Iteration variable '" + name + "' shadows existing identifier");
+    }
+    std::vector<Token> domain(tokens.begin() + 2, tokens.end());
+    auto range = std::ranges::find_if(domain, [](const Token& t) {
+      return t.type == Token::Type::OPERATOR && t.value == "..";
+    });
+    // the domain is built before the iterator is bound, so that it may read the iterators of preceding bindings
+    size_t slot = iterators.size();
+    iterators.push_back(name);
+    if (range != domain.end()) {
+      std::vector<Token> lower(domain.begin(), range);
+      std::vector<Token> upper(range + 1, domain.end());
+      if (!lower.empty() && lower.front().type == Token::Type::COLLECTION) {
+        // the tokenizer takes a name following 'in' for a collection, but a bound is a value
+        lower.front().type = Token::Type::VARIABLE;
+      }
+      if (lower.empty() || upper.empty()) {
+        throw std::runtime_error("LIMEX: A range requires a lower and an upper bound: '" + name + " in ..'");
+      }
+      bindings.emplace_back(this, Type::range_binding, std::vector<std::variant<double, size_t, Node<T,C>>>{ slot, buildTree(Type::group, lower), buildTree(Type::group, upper) });
+    }
+    else if (domain.size() == 1 && domain[0].type == Token::Type::COLLECTION) {
+      bindings.emplace_back(this, Type::array_binding, std::vector<std::variant<double, size_t, Node<T,C>>>{ slot, Node<T,C>(this, Type::collection, domain[0].value) });
+    }
+    else if (domain.size() == 1 && domain[0].type == Token::Type::PATH) {
+      Node<T,C> array = buildTree(Type::group, domain);
+      // the group holds the path node, which addresses an array
+      Node<T,C> path = std::get< Node<T,C> >(array.operands[0]);
+      path.type = Type::collection_path;
+      bindings.emplace_back(this, Type::array_binding, std::vector<std::variant<double, size_t, Node<T,C>>>{ slot, std::move(path) });
+    }
+    else {
+      throw std::runtime_error("LIMEX: Binding of '" + name + "' requires a range 'm..n' or an array");
+    }
+    scopes.back()[name] = slot;
+    slots.push_back(slot);
+  }
+  if (bindings.empty()) {
+    throw std::runtime_error("LIMEX: Aggregation requires syntax: aggr{ expression | var in range-or-array, ..., conditions }");
+  }
+  // the remaining parts are conditions, each checked by the last binding whose iterator it reads
+  for (; part < parts.size(); ++part) {
+    if (parts[part].empty()) {
+      throw std::runtime_error("LIMEX: Empty condition in aggregation");
+    }
+    Node<T,C> condition = buildTree(Type::group, parts[part]);
+    size_t level = 0;
+    for (size_t b = 0; b < slots.size(); ++b) {
+      if (condition.usesIterator(slots[b])) {
+        level = b;
+      }
+    }
+    bindings[level].operands.emplace_back(std::move(condition));
+  }
+  Node<T,C> body = buildTree(Type::group, bodyTokens);
+  scopes.pop_back();
+
+  std::vector<std::variant<double, size_t, Node<T,C>>> operands{ aggregator, std::move(body) };
+  for (auto& binding : bindings) {
+    operands.emplace_back(std::move(binding));
+  }
+  return Node<T,C>(this, Type::aggregation_over, std::move(operands));
 }
 
 template <typename T, typename C>
@@ -1516,31 +1767,6 @@ inline void Handle<T,C>::addAggregator(const std::string& name, std::function<T(
   }
   aggregatorNames.push_back(name);
   aggregatorImplementations.emplace_back(std::move(implementation));
-}
-
-template <typename T, typename C>
-inline T Handle<T,C>::filteredAggregateEvaluation(
-  const std::string& name,
-  const C& collection,
-  const Node<T,C>& conditions,
-  const std::vector<T>& variableValues,
-  const std::vector<C>& collectionValues
-) const {
-  // Iterator index is implicitly variableValues.size()
-  size_t iteratorIndex = variableValues.size();
-
-  // Collect the elements satisfying the conditions, the collection itself being read through its view
-  std::vector<T> filtered;
-  std::vector<T> localVars = variableValues;
-  localVars.resize(iteratorIndex + 1);
-  for (const T& elem : collection) {
-    localVars[iteratorIndex] = elem;
-    if (conditions.evaluate(localVars, collectionValues)) {
-      filtered.push_back(elem);
-    }
-  }
-  // Apply existing aggregate implementation
-  return aggregatorImplementations.at(getAggregatorIndex(name))(View<T>(filtered));
 }
 
 template <typename T, typename C>
@@ -1662,14 +1888,16 @@ inline void Handle<double>::initialize() {
     }
   );
 
-  // Aggregators
+  // Aggregators, which skip undefined values, represented by NaN, except for size
   addAggregator(
     std::string("sum"),
     [](const LIMEX::View<double>& args) -> double
     {
       double result = 0.0;
       for ( double value : args ) {
-        result += value;
+        if ( !std::isnan(value) ) {
+          result += value;
+        }
       }
       return result;
     }
@@ -1679,12 +1907,16 @@ inline void Handle<double>::initialize() {
     std::string("avg"),
     [](const LIMEX::View<double>& args) -> double
     {
-      if (args.empty()) throw std::runtime_error("LIMEX: avg{} requires at least one argument");
       double result = 0.0;
+      size_t count = 0;
       for ( double value : args ) {
-        result += value;
+        if ( !std::isnan(value) ) {
+          result += value;
+          ++count;
+        }
       }
-      return result / args.size();
+      if (count == 0) throw std::runtime_error("LIMEX: avg{} requires at least one defined argument");
+      return result / (double)count;
     }
   );
 
@@ -1692,7 +1924,21 @@ inline void Handle<double>::initialize() {
     std::string("count"),
     [](const LIMEX::View<double>& args) -> double
     {
-      return args.size();
+      size_t count = 0;
+      for ( double value : args ) {
+        if ( !std::isnan(value) ) {
+          ++count;
+        }
+      }
+      return (double)count;
+    }
+  );
+
+  addAggregator(
+    std::string("size"),
+    [](const LIMEX::View<double>& args) -> double
+    {
+      return (double)args.size();
     }
   );
 
@@ -1700,13 +1946,18 @@ inline void Handle<double>::initialize() {
     std::string("min"),
     [](const LIMEX::View<double>& args) -> double
     {
-      if (args.empty()) throw std::runtime_error("LIMEX: min{} requires at least one argument");
       double result = DBL_MAX;
+      bool defined = false;
       for ( double value : args ) {
-        if ( result > value ) {
+        if ( !std::isnan(value) && result > value ) {
           result = value;
-        };
+          defined = true;
+        }
+        else if ( !std::isnan(value) ) {
+          defined = true;
+        }
       }
+      if (!defined) throw std::runtime_error("LIMEX: min{} requires at least one defined argument");
       return result;
     }
   );
@@ -1715,13 +1966,18 @@ inline void Handle<double>::initialize() {
     std::string("max"),
     [](const LIMEX::View<double>& args) -> double
     {
-      if (args.empty()) throw std::runtime_error("LIMEX: max{} requires at least one argument");
       double result = -DBL_MAX;
+      bool defined = false;
       for ( double value : args ) {
-        if ( result < value ) {
+        if ( !std::isnan(value) && result < value ) {
           result = value;
-        };
+          defined = true;
+        }
+        else if ( !std::isnan(value) ) {
+          defined = true;
+        }
       }
+      if (!defined) throw std::runtime_error("LIMEX: max{} requires at least one defined argument");
       return result;
     }
   );
