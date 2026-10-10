@@ -31,8 +31,8 @@ int main()
     variableValues.push_back(value);
   } 
 
-  // Retrieve collections and respective values in expression
-  std::vector< std::vector<double> > collectionValues;
+  // Retrieve collections and respective values in expression; the values are held here and passed as views
+  std::vector< std::vector<double> > collections;
   for ( auto collectionName : expression.getCollections() ) {
     std::cout << "Enter comma separated values for collection '" << collectionName << "': ";
     std::vector<double> values;
@@ -41,8 +41,9 @@ int main()
     for ( auto value : std::ranges::to<std::vector<std::string>>(parts) ) {
       values.push_back( std::stod(value) );
     } 
-    collectionValues.push_back(values);
+    collections.push_back(values);
   } 
+  std::vector< LIMEX::View<double> > collectionValues( collections.begin(), collections.end() );
 
   // Evaluate expression with given values
   std::cout << "Result: " << expression.evaluate(variableValues,collectionValues) << std::endl;

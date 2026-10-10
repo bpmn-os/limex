@@ -51,7 +51,7 @@ for ( auto variableName : expression.getVariables() ) {
 } 
 
 // Retrieve collections and respective values in expression
-std::vector< std::vector<double> > collectionValues;
+std::vector< std::vector<double> > collections;
 for ( auto collectionName : expression.getCollections() ) {
   std::cout << "Enter comma separated values for collection '" << collectionName << "': ";
   std::vector<double> values;
@@ -60,11 +60,29 @@ for ( auto collectionName : expression.getCollections() ) {
   for ( auto value : std::ranges::to<std::vector<std::string>>(parts) ) {
     values.push_back( std::stod(value) );
   } 
-  collectionValues.push_back(values);
+  collections.push_back(values);
 } 
+
+// Pass each collection as a view of the values held above
+std::vector< LIMEX::View<double> > collectionValues( collections.begin(), collections.end() );
 
 // Evaluate expression with given values
 std::cout << "Result: " << expression.evaluate(variableValues,collectionValues) << std::endl;
+```
+
+### Views of collections
+
+A collection is passed to an expression as a `LIMEX::View<T>`, a read-only view of values held elsewhere,
+so that no collection is copied when an expression is evaluated. A view is either contiguous, constructed from
+a `std::vector<T>` or from the address and the number of its values, or computed, constructed from the number
+of values and an accessor returning the value at a given position, counting from zero. A computed view lets
+the caller present values that are not stored contiguously or not stored as `T`. The values must outlive the
+view; a view cannot be constructed from a temporary vector.
+
+```cpp
+std::vector<double> stored = { 1.0, 2.0, 3.0 };
+LIMEX::View<double> contiguous( stored );
+LIMEX::View<double> computed( 5, [](size_t k) { return 2.0 * (double)(k + 1); } ); // 2, 4, 6, 8, 10
 ```
 
 ## Supported operators and symbols
@@ -153,7 +171,15 @@ LIMEX includes a number of built-in functions and aggregators:
 | `x in X`            | Returns true if `x` is in the collection `X`.                                    |
 | `x not in X`        | Returns true if `x` is not in the collection `X`.                                |
 
-Custom function and aggregator definitions can be added.
+Custom function and aggregator definitions can be added. A function receives its evaluated arguments as a
+`std::vector<T>`, an aggregator receives its values as a `const LIMEX::View<T>&`, whether they are the values
+of a collection or the evaluated arguments of an aggregation such as `second{a, b, c}`:
+
+```cpp
+LIMEX::Handle<double> handle;
+handle.addFunction( "half", [](const std::vector<double>& args) { return args.at(0) / 2; } );
+handle.addAggregator( "second", [](const LIMEX::View<double>& values) { return values[1]; } );
+```
 
 ## Build test example
 

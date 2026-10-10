@@ -67,18 +67,74 @@ void test( std::string input, std::map<std::string,double> valueMap, std::map<st
       std::cerr << variable << " = " << valueMap.at(variable) << " ";    
       variableValues.push_back( valueMap.at(variable) );
     }
-    std::vector< std::vector<double> > collectionValues;
+    // each collection is passed as a view of the vector held by the map, which outlives the evaluation
+    std::vector< LIMEX::View<double> > collectionValues;
     for ( auto collection : expression.getCollections() ) {
       std::cerr << collection << " = [";
       for ( auto value : collectionMap.at(collection) ) {
         std::cerr << value << ", ";    
       }
       std::cerr << "] ";    
-      collectionValues.push_back( collectionMap.at(collection) );
+      collectionValues.emplace_back( collectionMap.at(collection) );
     }
 
     std::cerr << "implies " << input << " = " << expression.evaluate(variableValues,collectionValues) ;
     if (expression.evaluate(variableValues,collectionValues) == result) {
+      std::cerr << GREEN_COLOR << " [pass]" << RESET_COLOR << std::endl;
+    }
+    else {
+      std::cerr << RED_COLOR << " [fail, expected " << result << "]" << RESET_COLOR << std::endl;
+    }
+  }
+  catch (const std::exception& e) {
+    std::cerr << "Failed evaluating: " + input << std::endl;
+    std::cerr << e.what() << std::endl;
+  }
+}
+
+// Evaluates an expression whose only collection `X` is a computed view of `size` values, the value at
+// position k being 2 * (k + 1), so that X = [2, 4, 6, ...] without being stored.
+void testComputed( std::string input, size_t size, double result ) {
+  LIMEX::Handle<double> handle;
+  try {
+    LIMEX::Expression<double> expression(input,handle);
+    LIMEX::View<double> computed( size, [](size_t k) { return 2.0 * (double)(k + 1); } );
+    std::vector< LIMEX::View<double> > collectionValues;
+    for ( auto collection : expression.getCollections() ) {
+      if ( collection != "X" ) {
+        throw std::runtime_error("unexpected collection '" + collection + "'");
+      }
+      collectionValues.push_back( computed );
+    }
+    std::cerr << "X computed with " << size << " values implies " << input << " = " << expression.evaluate({},collectionValues);
+    if (expression.evaluate({},collectionValues) == result) {
+      std::cerr << GREEN_COLOR << " [pass]" << RESET_COLOR << std::endl;
+    }
+    else {
+      std::cerr << RED_COLOR << " [fail, expected " << result << "]" << RESET_COLOR << std::endl;
+    }
+  }
+  catch (const std::exception& e) {
+    std::cerr << "Failed evaluating: " + input << std::endl;
+    std::cerr << e.what() << std::endl;
+  }
+}
+
+// Evaluates an expression with a custom aggregator `second`, returning the second value of a view.
+void testCustomAggregator( std::string input, std::map<std::string,std::vector<double>> collectionMap, double result ) {
+  LIMEX::Handle<double> handle;
+  handle.addAggregator( "second", [](const LIMEX::View<double>& values) -> double {
+    if ( values.size() < 2 ) throw std::runtime_error("second{} requires at least two values");
+    return values[1];
+  });
+  try {
+    LIMEX::Expression<double> expression(input,handle);
+    std::vector< LIMEX::View<double> > collectionValues;
+    for ( auto collection : expression.getCollections() ) {
+      collectionValues.emplace_back( collectionMap.at(collection) );
+    }
+    std::cerr << input << " = " << expression.evaluate({},collectionValues);
+    if (expression.evaluate({},collectionValues) == result) {
       std::cerr << GREEN_COLOR << " [pass]" << RESET_COLOR << std::endl;
     }
     else {
@@ -238,4 +294,19 @@ void test() {
 
   // Function call requires collection and fails if function_call is used
   testParseError("min{ d in sqrt(x) | d >= 0 }");
+
+// Views
+  // computed views, X = [2, 4, 6, 8, 10]
+  testComputed("sum(X)", 5, 30.0);
+  testComputed("count(X)", 5, 5.0);
+  testComputed("max(X)", 5, 10.0);
+  testComputed("X[3]", 5, 6.0);
+  testComputed("6 in X", 5, 1.0);
+  testComputed("7 in X", 5, 0.0);
+  testComputed("7 not in X", 5, 1.0);
+  testComputed("sum{ x in X | x > 4 }", 5, 24.0); // 6 + 8 + 10
+  testComputed("count(X)", 0, 0.0);
+  // custom aggregator receiving a view, of a collection and of explicit arguments
+  testCustomAggregator("second(X)", { {"X", { 7.0, 8.0, 9.0 }} }, 8.0);
+  testCustomAggregator("second{ 3, 4, 5 }", {}, 4.0);
 }

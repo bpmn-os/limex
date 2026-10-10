@@ -16,6 +16,7 @@
 #include <ranges>
 #include <cmath>
 #include <cfloat>
+#include <cstddef>
 /**
  * A library for parsing mathematical expressions
  **/
@@ -37,9 +38,63 @@ struct Token {
   inline std::string stringify(int indent = 0) const;
 };
 
+/**
+ * @brief Read-only view of the values of a collection.
+ *
+ * A view refers to values held elsewhere and copies none of them, so that a collection is handed to an
+ * expression without being copied. It is either contiguous, referring to an array of values by its address
+ * and length, or computed, determining each value by an accessor called with the position of the value, which
+ * lets a caller present values that are not stored contiguously or not stored as `T`. The values must outlive
+ * the view.
+ *
+ * @tparam T The type of the values.
+ */
+template <typename T>
+class View {
+public:
+  /// @brief Iterator over the values of a view, yielding each value by value.
+  class iterator {
+  public:
+    using value_type = T;
+    using difference_type = std::ptrdiff_t;
+    iterator() = default;
+    iterator(const View* owner, size_t position) : view(owner), index(position) {}
+    T operator*() const { return (*view)[index]; }
+    iterator& operator++() { ++index; return *this; }
+    iterator operator++(int) { iterator previous = *this; ++index; return previous; }
+    bool operator==(const iterator& other) const { return index == other.index; }
+  private:
+    const View* view = nullptr;
+    size_t index = 0;
+  };
+
+  /// @brief Constructs an empty view.
+  View() = default;
+  /// @brief Constructs a contiguous view of `count` values beginning at `first`.
+  View(const T* first, size_t count) : data(first), length(count) {}
+  /// @brief Constructs a contiguous view of the values of a vector, which must outlive the view.
+  View(const std::vector<T>& values) : data(values.data()), length(values.size()) {}
+  /// @brief Deleted, since the view would refer to a vector destroyed at the end of the full expression.
+  View(std::vector<T>&& values) = delete;
+  /// @brief Constructs a computed view of `count` values, the value at position `k` being `valueAt(k)`.
+  View(size_t count, std::function<T(size_t)> valueAt) : length(count), accessor(std::move(valueAt)) {}
+
+  size_t size() const { return length; }
+  bool empty() const { return length == 0; }
+  /// @brief Returns the value at position `k`, counting from zero.
+  T operator[](size_t k) const { return accessor ? accessor(k) : data[k]; }
+  iterator begin() const { return iterator(this, 0); }
+  iterator end() const { return iterator(this, length); }
+
+private:
+  const T* data = nullptr;
+  size_t length = 0;
+  std::function<T(size_t)> accessor;
+};
+
 enum class Type; /// Types of nodes in the abstract syntax tree
 
-template <typename T, typename C = std::vector<T> > class Expression;
+template <typename T, typename C = View<T> > class Expression;
 
 /**
  * @brief Represents a node in the abstract syntax tree of an expression.
@@ -50,7 +105,7 @@ template <typename T, typename C = std::vector<T> > class Expression;
  * 
  * @tparam T The type of the value held by the node (e.g., double).
  */
-template <typename T, typename C = std::vector<T> >
+template <typename T, typename C = View<T> >
 class Node {
 public:
   Expression<T,C>* expression;
@@ -70,14 +125,14 @@ public:
   std::string stringify() const;
 };
 
-template <typename T, typename C = std::vector<T> >
+template <typename T, typename C = View<T> >
 class Handle {
 friend class Node<T,C>;
 friend class Expression<T,C>;
 public:
   Handle() { initialize(); };
   inline void addFunction(const std::string& name, std::function<T(const std::vector<T>&)> implementation);
-  inline void addAggregator(const std::string& name, std::function<T(const std::vector<T>&)> implementation);
+  inline void addAggregator(const std::string& name, std::function<T(const View<T>&)> implementation);
   inline bool isAggregator(const std::string& name) const;
   inline const std::vector<std::string>& getFunctionNames() const { return functionNames; }
   inline const std::vector<std::string>& getAggregatorNames() const { return aggregatorNames; }
@@ -102,7 +157,7 @@ private:
   std::vector<std::string> functionNames;
   std::vector<std::function<T(const std::vector<T>&)>> functionImplementations;
   std::vector<std::string> aggregatorNames;
-  std::vector<std::function<T(const std::vector<T>&)>> aggregatorImplementations;
+  std::vector<std::function<T(const View<T>&)>> aggregatorImplementations;
 };
 
 /**
@@ -566,8 +621,8 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const std::v
         // argument is a collection
         auto collection = std::get<size_t>(std::get<Node>(operands[1]).operands[0]);
 
-        if constexpr (std::is_same_v< C, std::vector<T> >) {
-          // collection type C is vector<T>
+        if constexpr (std::is_same_v< C, View<T> >) {
+          // collection type C is View<T>, which the aggregator takes as it is
           return expression->handle.aggregatorImplementations[index](collectionValues[collection]);
         }
         else if constexpr (std::is_same_v< C, T >) {
@@ -617,8 +672,8 @@ inline T Node<T,C>::evaluate( const std::vector<T>& variableValues, const std::v
       if (!std::holds_alternative<Node>(operands[1])) {
         throw std::logic_error("LIMEX: Unexpected operand");
       }
-      if constexpr (std::is_same_v< C, std::vector<T> >) {
-        // collection type C is vector<T>
+      if constexpr (std::is_same_v< C, View<T> >) {
+        // collection type C is View<T>
         if ( std::get<Node>(operands[1]).type == Type::literal ) {
           // index is given as a literal 
           auto value = std::get<double>(std::get<Node>(operands[1]).operands[0]);        
@@ -1452,7 +1507,7 @@ inline void Handle<T,C>::addFunction(const std::string& name, std::function<T(co
 }
 
 template <typename T, typename C>
-inline void Handle<T,C>::addAggregator(const std::string& name, std::function<T(const std::vector<T>&)> implementation) {
+inline void Handle<T,C>::addAggregator(const std::string& name, std::function<T(const View<T>&)> implementation) {
   if (std::ranges::contains(aggregatorNames, name)) {
     throw std::runtime_error("LIMEX: Aggregator '" + name + "' already exists");
   }
@@ -1474,8 +1529,8 @@ inline T Handle<T,C>::filteredAggregateEvaluation(
   // Iterator index is implicitly variableValues.size()
   size_t iteratorIndex = variableValues.size();
 
-  // Filter elements
-  C filtered;
+  // Collect the elements satisfying the conditions, the collection itself being read through its view
+  std::vector<T> filtered;
   std::vector<T> localVars = variableValues;
   localVars.resize(iteratorIndex + 1);
   for (const T& elem : collection) {
@@ -1485,7 +1540,7 @@ inline T Handle<T,C>::filteredAggregateEvaluation(
     }
   }
   // Apply existing aggregate implementation
-  return aggregatorImplementations.at(getAggregatorIndex(name))(filtered);
+  return aggregatorImplementations.at(getAggregatorIndex(name))(View<T>(filtered));
 }
 
 template <typename T, typename C>
@@ -1494,11 +1549,30 @@ inline T Handle<T,C>::membershipEvaluation(
   const T& element,
   const C& collection
 ) const {
-  std::vector<T> args = { element };
-  for (const T& elem : collection) {
-    args.push_back(elem);
+  if constexpr (std::is_arithmetic_v<T>) {
+    // the elements are compared where they are, without collecting them
+    bool found = false;
+    for (const T& elem : collection) {
+      if (elem == element) {
+        found = true;
+        break;
+      }
+    }
+    if (name == "element_of") {
+      return found;
+    }
+    if (name == "not_element_of") {
+      return !found;
+    }
+    throw std::logic_error("LIMEX: Unknown membership '" + name + "'");
   }
-  return aggregatorImplementations.at(getAggregatorIndex(name))(args);
+  else {
+    std::vector<T> args = { element };
+    for (const T& elem : collection) {
+      args.push_back(elem);
+    }
+    return aggregatorImplementations.at(getAggregatorIndex(name))(View<T>(args));
+  }
 }
 
 // Define built-in functions
@@ -1591,7 +1665,7 @@ inline void Handle<double>::initialize() {
   // Aggregators
   addAggregator(
     std::string("sum"),
-    [](const std::vector<double>& args) -> double
+    [](const LIMEX::View<double>& args) -> double
     {
       double result = 0.0;
       for ( double value : args ) {
@@ -1603,7 +1677,7 @@ inline void Handle<double>::initialize() {
 
   addAggregator(
     std::string("avg"),
-    [](const std::vector<double>& args) -> double
+    [](const LIMEX::View<double>& args) -> double
     {
       if (args.empty()) throw std::runtime_error("LIMEX: avg{} requires at least one argument");
       double result = 0.0;
@@ -1616,7 +1690,7 @@ inline void Handle<double>::initialize() {
 
   addAggregator(
     std::string("count"),
-    [](const std::vector<double>& args) -> double
+    [](const LIMEX::View<double>& args) -> double
     {
       return args.size();
     }
@@ -1624,7 +1698,7 @@ inline void Handle<double>::initialize() {
 
   addAggregator(
     std::string("min"),
-    [](const std::vector<double>& args) -> double
+    [](const LIMEX::View<double>& args) -> double
     {
       if (args.empty()) throw std::runtime_error("LIMEX: min{} requires at least one argument");
       double result = DBL_MAX;
@@ -1639,7 +1713,7 @@ inline void Handle<double>::initialize() {
 
   addAggregator(
     std::string("max"),
-    [](const std::vector<double>& args) -> double
+    [](const LIMEX::View<double>& args) -> double
     {
       if (args.empty()) throw std::runtime_error("LIMEX: max{} requires at least one argument");
       double result = -DBL_MAX;
@@ -1654,7 +1728,7 @@ inline void Handle<double>::initialize() {
 
   addAggregator(
     std::string("element_of"),
-    [](const std::vector<double>& args) -> double
+    [](const LIMEX::View<double>& args) -> double
     {
       if (args.empty()) throw std::runtime_error("LIMEX: ∈ {...} requires at least one argument");
       for ( size_t i = 1; i < args.size(); i++ ) {
@@ -1668,7 +1742,7 @@ inline void Handle<double>::initialize() {
 
   addAggregator(
     std::string("not_element_of"),
-    [](const std::vector<double>& args) -> double
+    [](const LIMEX::View<double>& args) -> double
     {
       if (args.empty()) throw std::runtime_error("LIMEX: ∉ {...} requires at least one argument");
       for ( size_t i = 1; i < args.size(); i++ ) {
