@@ -5,7 +5,7 @@ LIMEX is a header-only C++ library for parsing and evaluating mathematical expre
 ## Features
 
 - Header-only: no compilation or linking needed
-- Support for variables, collections, and access paths into arrays and structured values resolved by the caller
+- Support for variables and for access paths into arrays and structured values resolved by the caller
 - Customizable evaluation through custom handlers allowing to build, e.g., [constraint programming](https://github.com/bpmn-os/cp) models. 
 
 ## Getting started
@@ -34,7 +34,7 @@ int main() {
 }
 ```
 
-### Using variables and collections
+### Using variables and arrays
 
 ```cpp
 std::string input = "x + sum(a)";
@@ -50,30 +50,30 @@ for ( auto variableName : expression.getVariables() ) {
   variableValues.push_back(value);
 } 
 
-// Retrieve collections and respective values in expression
-std::vector< std::vector<double> > collections;
-for ( auto collectionName : expression.getCollections() ) {
-  std::cout << "Enter comma separated values for collection '" << collectionName << "': ";
-  std::vector<double> values;
+// Retrieve the arrays the expression names, each a path without steps, and their values
+std::vector< std::vector<double> > arrays( expression.getPaths().size() );
+for ( size_t path = 0; path < expression.getPaths().size(); path++ ) {
+  if ( !expression.getPaths()[path].steps.empty() ) continue;
+  std::cout << "Enter comma separated values for array '" << expression.getPaths()[path].name << "': ";
   std::getline( std::cin, input );
   auto parts = std::ranges::views::split( input, ',' );
   for ( auto value : std::ranges::to<std::vector<std::string>>(parts) ) {
-    values.push_back( std::stod(value) );
+    arrays[path].push_back( std::stod(value) );
   } 
-  collections.push_back(values);
 } 
 
-// Pass each collection as a view of the values held above
-std::vector< LIMEX::View<double> > collectionValues( collections.begin(), collections.end() );
+// Pass each array as a view of the values held above
+LIMEX::Resolver<double> resolver;
+resolver.collection = [&](size_t path, const std::vector<double>&) { return LIMEX::View<double>( arrays[path] ); };
 
 // Evaluate expression with given values
-std::cout << "Result: " << expression.evaluate(variableValues,collectionValues) << std::endl;
+std::cout << "Result: " << expression.evaluate(variableValues,resolver) << std::endl;
 ```
 
-### Views of collections
+### Views of arrays
 
-A collection is passed to an expression as a `LIMEX::View<T>`, a read-only view of values held elsewhere,
-so that no collection is copied when an expression is evaluated. A view is either contiguous, constructed from
+An array is passed to an expression as a `LIMEX::View<T>`, a read-only view of values held elsewhere,
+so that no array is copied when an expression is evaluated. A view is either contiguous, constructed from
 a `std::vector<T>` or from the address and the number of its values, or computed, constructed from the number
 of values and an accessor returning the value at a given position, counting from zero. A computed view lets
 the caller present values that are not stored contiguously or not stored as `T`. The values must outlive the
@@ -88,7 +88,8 @@ LIMEX::View<double> computed( 5, [](size_t k) { return 2.0 * (double)(k + 1); } 
 ### Access paths
 
 A name followed by indices and fields, `name ( .field | [expression] )*`, is an access path, for instance
-`a[i]`, `facilities[i].cost`, `grid[i][j]` or `facilities[location[1]].flags[j]`. LIMEX knows nothing of the
+`a[i]`, `facilities[i].cost`, `grid[i][j]` or `facilities[location[1]].flags[j]`. A name used as an array, `a` in
+`sum(a)`, `x in a` or `d in a`, is a path without steps, which may also be written `a[]`. LIMEX knows nothing of the
 values a path addresses: it evaluates the index expressions and asks the caller to resolve the path. The paths
 of an expression are listed by `getPaths()`, each with its name and its steps, a step being a field name or,
 for an index, `std::nullopt`. The caller passes a `LIMEX::Resolver<T>` with two callbacks, each receiving the
@@ -106,7 +107,7 @@ resolver.value = [&](size_t path, const std::vector<double>& indices) {
   // the only path is a[i], with a single index counting from one
   return a.at( (size_t)indices[0] - 1 );
 };
-std::cout << expression.evaluate( { 1.0, 2.0 }, {}, resolver ) << std::endl; // x = 1, i = 2: prints 6
+std::cout << expression.evaluate( { 1.0, 2.0 }, resolver ) << std::endl; // x = 1, i = 2: prints 6
 ```
 
 ### Assignments
@@ -122,7 +123,7 @@ the target is read as well.
 
 `aggr{ expression | bindings, conditions }` aggregates the values of an expression over all combinations of
 iterator values satisfying the conditions. A binding `i in m..n` iterates over the integers from `m` to `n`,
-and a binding `i in X` over the elements of an array, given by a collection or a path. Bindings are nested in
+and a binding `i in X` over the elements of an array, given by a path, a name being a path without steps. Bindings are nested in
 their order, a later binding may use the iterators of earlier ones, and each condition is checked as soon as
 all iterators it reads are bound:
 
@@ -135,7 +136,7 @@ min{ d | d in departures, d >= timestamp }
 The leading parts of the form `v in ...` whose name `v` is not yet bound are bindings, the remaining parts are
 conditions. A condition testing the membership of a variable that is not bound must therefore not directly
 follow the bindings in this form, and is written in parentheses, e.g. `sum{ i | i in 1..3, (y in Y) }`. A
-range `m..n` is only allowed in a binding. An iterator must not have the name of a variable or collection of
+range `m..n` is only allowed in a binding. An iterator must not have the name of a variable or path of
 the expression, and is visible only within its aggregation. A condition whose value is undefined, i.e. NaN, is
 not satisfied, whereas a comparison with an undefined value is false, as for every `double`.
 
@@ -230,15 +231,15 @@ LIMEX includes a number of built-in functions and aggregators:
 | `count{ e \| i in X, c, ... }` | Returns the number of defined values of `e` over all `i` satisfying the conditions. |
 | `min{ e \| i in m..n, c, ... }` | Returns the minimum of `e` over all `i` from `m` to `n` satisfying the conditions. |
 | `max{ e \| i in m..n, c, ... }` | Returns the maximum of `e` over all `i` from `m` to `n` satisfying the conditions. |
-| `sum(X)`, `count(X)`, `size(X)`, ... | Applies the aggregator to the values of a collection or of the array a path addresses. |
+| `sum(X)`, `count(X)`, `size(X)`, ... | Applies the aggregator to the values of the array a name or path addresses. |
 | `x ∈ { a, b, ...}`  | Returns true if `x` is in the set.                                               |
 | `x ∉ { a, b, ...}`  | Returns true if `x` is not in the set.                                           |
-| `x in X`            | Returns true if `x` is in the collection or path `X`.                            |
-| `x not in X`        | Returns true if `x` is not in the collection or path `X`.                        |
+| `x in X`            | Returns true if `x` is in the array `X`, a name or path.                         |
+| `x not in X`        | Returns true if `x` is not in the array `X`, a name or path.                     |
 
 Custom function and aggregator definitions can be added. A function receives its evaluated arguments as a
 `std::vector<T>`, an aggregator receives its values as a `const LIMEX::View<T>&`, whether they are the values
-of a collection or the evaluated arguments of an aggregation such as `second{a, b, c}`:
+of an array or the evaluated arguments of an aggregation such as `second{a, b, c}`:
 
 ```cpp
 LIMEX::Handle<double> handle;

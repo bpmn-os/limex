@@ -31,7 +31,7 @@ namespace LIMEX {
  */
 struct Token {
   enum class Category { PREFIX, OPERAND, POSTFIX, INFIX }; /// Categories of input to be parsed by lexer
-  enum class Type { NUMBER, VARIABLE, COLLECTION, OPERATOR, SEPARATOR, GROUP, SET, SEQUENCE, FUNCTION_CALL, AGGREGATION, PATH, FIELD, INDEX };
+  enum class Type { NUMBER, VARIABLE, OPERATOR, SEPARATOR, GROUP, SET, SEQUENCE, FUNCTION_CALL, AGGREGATION, PATH, FIELD, INDEX };
   Token(Category category, Type type, std::string value = "") : category(category), type(type), value(std::move(value)) {}
   Category category;
   Type type;
@@ -41,9 +41,9 @@ struct Token {
 };
 
 /**
- * @brief Read-only view of the values of a collection.
+ * @brief Read-only view of the values of an array.
  *
- * A view refers to values held elsewhere and copies none of them, so that a collection is handed to an
+ * A view refers to values held elsewhere and copies none of them, so that an array is handed to an
  * expression without being copied. It is either contiguous, referring to an array of values by its address
  * and length, or computed, determining each value by an accessor called with the position of the value, which
  * lets a caller present values that are not stored contiguously or not stored as `T`. The values must outlive
@@ -127,7 +127,6 @@ struct Resolver {
 template <typename T, typename C = View<T> >
 struct Context {
   const std::vector<T>& variableValues;
-  const std::vector<C>& collectionValues;
   const Resolver<T,C>& resolver;
   std::vector<T> iteratorValues;
 };
@@ -141,7 +140,8 @@ template <typename T, typename C = View<T> > class Expression;
  * 
  * Each node can represent either a literal value, a variable, or a complex expression with operands. 
  * It supports evaluation based on provided
- * variable and collection values, and can generate a string representation of the expression.
+ * variable values and on the arrays and values the caller resolves, and can generate a string representation
+ * of the expression.
  * 
  * @tparam T The type of the value held by the node (e.g., double).
  */
@@ -153,7 +153,7 @@ public:
   std::vector< std::variant<double, size_t, Node> > operands;
   // Constructor for a literal node
   Node(Expression<T,C>* expression, double value);
-  // Constructor for a variable or collection node
+  // Constructor for a variable node
   Node(Expression<T,C>* expression, Type type, std::string name);
   // Constructor for a node with multiple operands
   Node(Expression<T,C>* expression, Type type, std::vector< std::variant<double, size_t, Node> > operands);
@@ -164,7 +164,7 @@ public:
   inline T evaluate( Context<T,C>& context ) const;
   // Evaluate the index expressions of a path node
   inline std::vector<T> evaluateIndices( Context<T,C>& context ) const;
-  // Evaluate a collection or collection path node to the array it denotes
+  // Evaluate a path node resolved as an array to the array it denotes
   inline C evaluateCollection( Context<T,C>& context ) const;
   // Returns true if the node or one of its descendants reads the iterator with the given slot
   inline bool usesIterator( size_t slot ) const;
@@ -202,7 +202,7 @@ private:
  * @brief Represents a mathematical expression that can be evaluated for different values.
  * 
  * This class is used to parse a string representing a mathemtical expression, build an abstract syntax tree, 
- * and evaluate it based on the provided variable and collection values. The expression can include 
+ * and evaluate it based on the provided variable values and the paths the caller resolves. The expression can include 
  * variables, functions, operators, and other mathematical operations, which are processed and executed 
  * during evaluation. Users can defined custom functions and set operators to be used when evaluating an 
  * expression. Several built-in functions and set operators must be made available through an appropriate 
@@ -217,24 +217,21 @@ public:
   Expression(const std::string& expression, const Handle<T,C>& handle);
   /// The names of the variables, whose values the caller passes in this order
   inline const std::vector<std::string>& getVariables() const { return variables; }
-  /// The names of the collections, whose views the caller passes in this order
-  inline const std::vector<std::string>& getCollections() const { return collections; }
   /// The access paths, which the caller resolves by their position in this vector
   inline const std::vector<Path>& getPaths() const { return paths; }
   /// The name of the variable or path an assignment assigns to
   inline const std::optional<std::string>& getTarget() const { return target; }
   /// The position of the path an assignment assigns to, if the target is a path
   inline const std::optional<size_t>& getTargetPath() const { return targetPath; }
-  inline T evaluate( const std::vector<T>& variableValues = {}, const std::vector<C>& collectionValues = {}, const Resolver<T,C>& resolver = {}) const;
+  inline T evaluate( const std::vector<T>& variableValues = {}, const Resolver<T,C>& resolver = {}) const;
   /// Evaluates the indices of the path an assignment assigns to, which the caller writes
-  inline std::vector<T> evaluateTargetIndices( const std::vector<T>& variableValues = {}, const std::vector<C>& collectionValues = {}, const Resolver<T,C>& resolver = {}) const;
+  inline std::vector<T> evaluateTargetIndices( const std::vector<T>& variableValues = {}, const Resolver<T,C>& resolver = {}) const;
   inline const Node<T,C>& getRoot() const { return root; }
   const std::string input;
   inline std::string stringify() const;
 private:
   const Handle<T,C>& handle;
   std::vector<std::string> variables;
-  std::vector<std::string> collections;
   std::vector<Path> paths;
   std::vector<std::string> iterators; ///< The names of the iterators, one slot per binding
   std::vector< std::unordered_map<std::string,size_t> > scopes; ///< The iterators bound while parsing an aggregation
@@ -260,7 +257,6 @@ private:
 enum class Type {
     literal, // a given number
     variable, // a named variable
-    collection, // a named collection
     group, // a block encapsulated in '(' and ')'
     set, // a block encapsulated in '{' and '}'
     sequence, // a block encapsulated in '[' and ']'
@@ -307,7 +303,6 @@ enum class Type {
 constexpr auto typeName = std::to_array<std::string_view> ({ 
     "literal", // a given number
     "variable", // a named variable
-    "collection", // a named collection
     "group", // a block encapsulated in '(' and ')'
     "set", // a block encapsulated in '{' and '}'
     "sequence", // a block encapsulated in '[' and ']'
@@ -478,7 +473,6 @@ inline std::string Token::stringify(int indent) const {
   switch (type) {
     case Type::NUMBER: result += "NUMBER"; break;
     case Type::VARIABLE: result += "VARIABLE"; break;
-    case Type::COLLECTION: result += "COLLECTION"; break;
     case Type::OPERATOR: result += "OPERATOR"; break;
     case Type::SEPARATOR: result += "SEPARATOR"; break;
     case Type::GROUP: result += "GROUP"; break;
@@ -512,16 +506,13 @@ Node<T,C>::Node(Expression<T,C>* expression, double value)
   operands.emplace_back(std::move(value));
 }
 
-// Constructor for a variable or collection node
+// Constructor for a variable node
 template <typename T, typename C>
 Node<T,C>::Node(Expression<T,C>* expression, Type type, std::string name)
 : expression(expression), type(type)
 {
   if ( type == Type::variable ) {
     operands.emplace_back(expression->getIndex(expression->variables,name));
-  }
-  else if ( type == Type::collection ) {
-    operands.emplace_back(expression->getIndex(expression->collections,name));
   }
   else {
     throw std::logic_error("LIMEX: Unexpected node type");
@@ -566,9 +557,6 @@ inline T Node<T,C>::evaluate( Context<T,C>& context ) const {
       return std::get<double>(operands[0]);
     case Type::variable: {
       return context.variableValues[std::get<size_t>(operands[0])];
-    }
-    case Type::collection: {
-      throw std::runtime_error("LIMEX: Collections cannot be evaluated");
     }
     case Type::negate: {
       auto operandValue = std::get<Node>(operands[0]).evaluate(context);
@@ -666,9 +654,9 @@ inline T Node<T,C>::evaluate( Context<T,C>& context ) const {
       if (
         operands.size() == 2 &&
         std::holds_alternative<Node>(operands[1]) &&
-        ( std::get<Node>(operands[1]).type == Type::collection || std::get<Node>(operands[1]).type == Type::collection_path )
+        std::get<Node>(operands[1]).type == Type::collection_path
       ) {
-        // argument is a collection or a path resolved as an array
+        // argument is a path resolved as an array
         C collection = std::get<Node>(operands[1]).evaluateCollection(context);
 
         if constexpr (std::is_same_v< C, View<T> >) {
@@ -779,8 +767,8 @@ inline T Node<T,C>::evaluate( Context<T,C>& context ) const {
     case Type::element_of: {
       T element = std::get<Node>(operands[0]).evaluate(context);
       auto& rhs = std::get<Node>(operands[1]);
-      if (rhs.type == Type::collection || rhs.type == Type::collection_path) {
-        // External collection or path resolved as an array - use membershipEvaluation
+      if (rhs.type == Type::collection_path) {
+        // a path resolved as an array - use membershipEvaluation
         return expression->handle.membershipEvaluation("element_of", element, rhs.evaluateCollection(context));
       }
       else {
@@ -796,8 +784,8 @@ inline T Node<T,C>::evaluate( Context<T,C>& context ) const {
     case Type::not_element_of: {
       T element = std::get<Node>(operands[0]).evaluate(context);
       auto& rhs = std::get<Node>(operands[1]);
-      if (rhs.type == Type::collection || rhs.type == Type::collection_path) {
-        // External collection or path resolved as an array - use membershipEvaluation
+      if (rhs.type == Type::collection_path) {
+        // a path resolved as an array - use membershipEvaluation
         return expression->handle.membershipEvaluation("not_element_of", element, rhs.evaluateCollection(context));
       }
       else {
@@ -907,13 +895,6 @@ inline std::vector<T> Node<T,C>::evaluateIndices( Context<T,C>& context ) const 
 
 template <typename T, typename C>
 inline C Node<T,C>::evaluateCollection( Context<T,C>& context ) const {
-  if (type == Type::collection) {
-    size_t collection = std::get<size_t>(operands[0]);
-    if (collection >= context.collectionValues.size()) {
-      throw std::runtime_error("LIMEX: Insufficient collections provided");
-    }
-    return context.collectionValues[collection];
-  }
   if (type == Type::collection_path) {
     size_t path = std::get<size_t>(operands[0]);
     if (!context.resolver.collection) {
@@ -950,9 +931,6 @@ inline std::string Node<T,C>::stringify() const {
     else if (std::holds_alternative<size_t>(operand)) {
       if ( type == Type::variable ) {
         result += expression->variables.at(std::get<size_t>(operand)) + ", ";
-      }
-      else if ( type == Type::collection ) {
-        result += expression->collections.at(std::get<size_t>(operand)) + ", ";
       }
       else if ( type == Type::path || type == Type::collection_path ) {
         result += expression->paths.at(std::get<size_t>(operand)).name + ", ";
@@ -993,17 +971,17 @@ Expression<T,C>::Expression(const std::string& expression, const Handle<T,C>& ha
 }
 
 template <typename T, typename C>
-inline T Expression<T,C>::evaluate( const std::vector<T>& variableValues, const std::vector<C>& collectionValues, const Resolver<T,C>& resolver) const {
-  Context<T,C> context{ variableValues, collectionValues, resolver, std::vector<T>(iterators.size()) };
+inline T Expression<T,C>::evaluate( const std::vector<T>& variableValues, const Resolver<T,C>& resolver) const {
+  Context<T,C> context{ variableValues, resolver, std::vector<T>(iterators.size()) };
   return root.evaluate(context);
 }
 
 template <typename T, typename C>
-inline std::vector<T> Expression<T,C>::evaluateTargetIndices( const std::vector<T>& variableValues, const std::vector<C>& collectionValues, const Resolver<T,C>& resolver) const {
+inline std::vector<T> Expression<T,C>::evaluateTargetIndices( const std::vector<T>& variableValues, const Resolver<T,C>& resolver) const {
   if (!targetPath.has_value()) {
     return {};
   }
-  Context<T,C> context{ variableValues, collectionValues, resolver, std::vector<T>(iterators.size()) };
+  Context<T,C> context{ variableValues, resolver, std::vector<T>(iterators.size()) };
   // the root is a group holding the assignment, which keeps the target path as its last operand for ':=' and
   // as its first operand for a compound assignment
   const Node<T,C>& assignment = std::get< Node<T,C> >(root.operands[0]);
@@ -1102,9 +1080,10 @@ inline Token Expression<T,C>::tokenize(const std::string& input) {
           continue;
         }
         else if ( startsWith(input,pos,"[]") ) {
+          // an array named explicitly, which is a path without steps
           pos += 2;
           expected = Token::Category::OPERAND;
-          groupStack.top().first->children.emplace_back(Token::Category::OPERAND, Token::Type::COLLECTION, name);
+          groupStack.top().first->children.emplace_back(Token::Category::OPERAND, Token::Type::PATH, name);
         }
         else if (
           pos < input.length() &&
@@ -1123,7 +1102,7 @@ inline Token Expression<T,C>::tokenize(const std::string& input) {
         }
         else {
           expected = Token::Category::POSTFIX;
-          // Check if previous token was element_of/not_element_of operator - if so, this is a collection
+          // a name following element_of or not_element_of is an array, which is a path without steps
           auto& children = groupStack.top().first->children;
           bool afterInOperator = !children.empty() &&
               children.back().category == Token::Category::INFIX &&
@@ -1131,7 +1110,7 @@ inline Token Expression<T,C>::tokenize(const std::string& input) {
               (infixTypes.at(children.back().value) == Type::element_of ||
                infixTypes.at(children.back().value) == Type::not_element_of);
           if (afterInOperator) {
-            groupStack.top().first->children.emplace_back(Token::Category::OPERAND, Token::Type::COLLECTION, name);
+            groupStack.top().first->children.emplace_back(Token::Category::OPERAND, Token::Type::PATH, name);
           }
           else {
             groupStack.top().first->children.emplace_back(Token::Category::OPERAND, Token::Type::VARIABLE, name);
@@ -1397,8 +1376,6 @@ inline Node<T,C> Expression<T,C>::buildTree( Type type, const std::vector<Token>
         }
         return Node<T,C>(this, Type::path, std::move(pathOperands));
       }
-      case Token::Type::COLLECTION:
-        return Node<T,C>(this, Type::collection, token.value);
       case Token::Type::GROUP:
         return buildTree(Type::group, token.children);
       case Token::Type::SET:
@@ -1407,19 +1384,19 @@ inline Node<T,C> Expression<T,C>::buildTree( Type type, const std::vector<Token>
         return buildTree(Type::sequence, token.children);    
       case Token::Type::FUNCTION_CALL:
         if (handle.isAggregator(token.value)) {
-          // aggr(X) - aggregation over a collection or over the array a path addresses
+          // aggr(X) - aggregation over the array a path addresses, a name being a path without steps
           if (
             token.children.size() != 1 ||
             ( token.children[0].type != Token::Type::VARIABLE && token.children[0].type != Token::Type::PATH ) ||
             boundIterator(token.children[0].value)
           ) {
-            throw std::runtime_error("LIMEX: Aggregator with () requires single collection");
+            throw std::runtime_error("LIMEX: Aggregator with () requires single array");
           }
           size_t aggrIdx = handle.getAggregatorIndex(token.value);
-          Node<T,C> collNode = ( token.children[0].type == Token::Type::PATH ? createNode(token.children[0]) : Node<T,C>(this, Type::collection, std::vector<std::variant<double, size_t, Node<T,C>>>{ getIndex(collections, token.children[0].value) }) );
-          if (collNode.type == Type::path) {
-            collNode.type = Type::collection_path;
-          }
+          Token array = token.children[0];
+          array.type = Token::Type::PATH;
+          Node<T,C> collNode = createNode(array);
+          collNode.type = Type::collection_path;
           return Node<T,C>(this, Type::aggregation, std::vector<std::variant<double, size_t, Node<T,C>>>{ aggrIdx, std::move(collNode) });
         }
         return buildTree(Type::function_call, token.children, handle.getFunctionIndex(token.value));    
@@ -1648,7 +1625,7 @@ inline Node<T,C> Expression<T,C>::buildAggregationOver( const Token& token ) {
       break;
     }
     const std::string& name = tokens[0].value;
-    if ( std::ranges::contains(variables, name) || std::ranges::contains(collections, name) ) {
+    if ( std::ranges::contains(variables, name) || std::ranges::any_of(paths, [&name](const Path& path) { return path.name == name; }) ) {
       throw std::runtime_error("LIMEX: Iteration variable '" + name + "' shadows existing identifier");
     }
     std::vector<Token> domain(tokens.begin() + 2, tokens.end());
@@ -1661,17 +1638,14 @@ inline Node<T,C> Expression<T,C>::buildAggregationOver( const Token& token ) {
     if (range != domain.end()) {
       std::vector<Token> lower(domain.begin(), range);
       std::vector<Token> upper(range + 1, domain.end());
-      if (!lower.empty() && lower.front().type == Token::Type::COLLECTION) {
-        // the tokenizer takes a name following 'in' for a collection, but a bound is a value
+      if (!lower.empty() && lower.front().type == Token::Type::PATH && lower.front().children.empty()) {
+        // the tokenizer takes a name following 'in' for an array, but a bound is a value
         lower.front().type = Token::Type::VARIABLE;
       }
       if (lower.empty() || upper.empty()) {
         throw std::runtime_error("LIMEX: A range requires a lower and an upper bound: '" + name + " in ..'");
       }
       bindings.emplace_back(this, Type::range_binding, std::vector<std::variant<double, size_t, Node<T,C>>>{ slot, buildTree(Type::group, lower), buildTree(Type::group, upper) });
-    }
-    else if (domain.size() == 1 && domain[0].type == Token::Type::COLLECTION) {
-      bindings.emplace_back(this, Type::array_binding, std::vector<std::variant<double, size_t, Node<T,C>>>{ slot, Node<T,C>(this, Type::collection, domain[0].value) });
     }
     else if (domain.size() == 1 && domain[0].type == Token::Type::PATH) {
       Node<T,C> array = buildTree(Type::group, domain);

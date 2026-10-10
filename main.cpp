@@ -31,22 +31,28 @@ int main()
     variableValues.push_back(value);
   } 
 
-  // Retrieve collections and respective values in expression; the values are held here and passed as views
-  std::vector< std::vector<double> > collections;
-  for ( auto collectionName : expression.getCollections() ) {
-    std::cout << "Enter comma separated values for collection '" << collectionName << "': ";
-    std::vector<double> values;
+  // Retrieve the arrays the expression names, each a path without steps; the values are held here and
+  // passed as views
+  std::vector< std::vector<double> > arrays( expression.getPaths().size() );
+  for ( size_t path = 0; path < expression.getPaths().size(); path++ ) {
+    auto& description = expression.getPaths()[path];
+    if ( !description.steps.empty() ) {
+      continue;
+    }
+    std::cout << "Enter comma separated values for array '" << description.name << "': ";
     std::getline( std::cin, input );
     auto parts = std::ranges::views::split( input, ',' );
     for ( auto value : std::ranges::to<std::vector<std::string>>(parts) ) {
-      values.push_back( std::stod(value) );
-    } 
-    collections.push_back(values);
-  } 
-  std::vector< LIMEX::View<double> > collectionValues( collections.begin(), collections.end() );
+      arrays[path].push_back( std::stod(value) );
+    }
+  }
+  LIMEX::Resolver<double> resolver;
+  resolver.collection = [&arrays](size_t path, const std::vector<double>&) -> LIMEX::View<double> {
+    return LIMEX::View<double>( arrays[path] );
+  };
 
   // Evaluate expression with given values
-  std::cout << "Result: " << expression.evaluate(variableValues,collectionValues) << std::endl;
+  std::cout << "Result: " << expression.evaluate(variableValues,resolver) << std::endl;
 
 /*
   LIMEX::Handle<double> handle;

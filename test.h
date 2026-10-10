@@ -69,19 +69,23 @@ void test( std::string input, std::map<std::string,double> valueMap, std::map<st
       std::cerr << variable << " = " << valueMap.at(variable) << " ";    
       variableValues.push_back( valueMap.at(variable) );
     }
-    // each collection is passed as a view of the vector held by the map, which outlives the evaluation
-    std::vector< LIMEX::View<double> > collectionValues;
-    for ( auto collection : expression.getCollections() ) {
-      std::cerr << collection << " = [";
-      for ( auto value : collectionMap.at(collection) ) {
-        std::cerr << value << ", ";    
+    // a path without steps names an array of the map, which is passed as a view of the vector held by the
+    // map, which outlives the evaluation
+    for ( auto& description : expression.getPaths() ) {
+      if ( description.steps.empty() ) {
+        std::cerr << description.name << " = [";
+        for ( auto value : collectionMap.at(description.name) ) {
+          std::cerr << value << ", ";
+        }
+        std::cerr << "] ";
       }
-      std::cerr << "] ";    
-      collectionValues.emplace_back( collectionMap.at(collection) );
     }
 
-    // a path of one index addresses an element of a collection of the map, counting from one
+    // a path of one index addresses an element of an array of the map, counting from one
     LIMEX::Resolver<double> resolver;
+    resolver.collection = [&](size_t path, const std::vector<double>&) -> LIMEX::View<double> {
+      return LIMEX::View<double>( collectionMap.at(expression.getPaths().at(path).name) );
+    };
     resolver.value = [&](size_t path, const std::vector<double>& indices) -> double {
       const auto& description = expression.getPaths().at(path);
       if ( description.steps.size() != 1 || description.steps[0].has_value() ) {
@@ -94,8 +98,8 @@ void test( std::string input, std::map<std::string,double> valueMap, std::map<st
       return values[(size_t)indices[0] - 1];
     };
 
-    std::cerr << "implies " << input << " = " << expression.evaluate(variableValues,collectionValues,resolver) ;
-    if (expression.evaluate(variableValues,collectionValues,resolver) == result) {
+    std::cerr << "implies " << input << " = " << expression.evaluate(variableValues,resolver) ;
+    if (expression.evaluate(variableValues,resolver) == result) {
       std::cerr << GREEN_COLOR << " [pass]" << RESET_COLOR << std::endl;
     }
     else {
@@ -108,27 +112,26 @@ void test( std::string input, std::map<std::string,double> valueMap, std::map<st
   }
 }
 
-// Evaluates an expression whose only collection `X` is a computed view of `size` values, the value at
+// Evaluates an expression whose only array `X` is a computed view of `size` values, the value at
 // position k being 2 * (k + 1), so that X = [2, 4, 6, ...] without being stored.
 void testComputed( std::string input, size_t size, double result ) {
   LIMEX::Handle<double> handle;
   try {
     LIMEX::Expression<double> expression(input,handle);
     LIMEX::View<double> computed( size, [](size_t k) { return 2.0 * (double)(k + 1); } );
-    std::vector< LIMEX::View<double> > collectionValues;
-    for ( auto collection : expression.getCollections() ) {
-      if ( collection != "X" ) {
-        throw std::runtime_error("unexpected collection '" + collection + "'");
-      }
-      collectionValues.push_back( computed );
-    }
-    // a path of one index addresses an element of X
+    // a path without steps names X, and a path of one index addresses an element of X
     LIMEX::Resolver<double> resolver;
+    resolver.collection = [&](size_t path, const std::vector<double>&) -> LIMEX::View<double> {
+      if ( expression.getPaths().at(path).name != "X" ) {
+        throw std::runtime_error("unexpected array '" + expression.getPaths().at(path).name + "'");
+      }
+      return computed;
+    };
     resolver.value = [&](size_t path [[maybe_unused]], const std::vector<double>& indices) -> double {
       return computed[(size_t)indices[0] - 1];
     };
-    std::cerr << "X computed with " << size << " values implies " << input << " = " << expression.evaluate({},collectionValues,resolver);
-    if (expression.evaluate({},collectionValues,resolver) == result) {
+    std::cerr << "X computed with " << size << " values implies " << input << " = " << expression.evaluate({},resolver);
+    if (expression.evaluate({},resolver) == result) {
       std::cerr << GREEN_COLOR << " [pass]" << RESET_COLOR << std::endl;
     }
     else {
@@ -150,12 +153,12 @@ void testCustomAggregator( std::string input, std::map<std::string,std::vector<d
   });
   try {
     LIMEX::Expression<double> expression(input,handle);
-    std::vector< LIMEX::View<double> > collectionValues;
-    for ( auto collection : expression.getCollections() ) {
-      collectionValues.emplace_back( collectionMap.at(collection) );
-    }
-    std::cerr << input << " = " << expression.evaluate({},collectionValues);
-    if (expression.evaluate({},collectionValues) == result) {
+    LIMEX::Resolver<double> resolver;
+    resolver.collection = [&](size_t path, const std::vector<double>&) -> LIMEX::View<double> {
+      return LIMEX::View<double>( collectionMap.at(expression.getPaths().at(path).name) );
+    };
+    std::cerr << input << " = " << expression.evaluate({},resolver);
+    if (expression.evaluate({},resolver) == result) {
       std::cerr << GREEN_COLOR << " [pass]" << RESET_COLOR << std::endl;
     }
     else {
@@ -168,8 +171,8 @@ void testCustomAggregator( std::string input, std::map<std::string,std::vector<d
   }
 }
 
-// The data of the path tests: the arrays `location` and `partial` (with an undefined element), passed as
-// collections, and, resolved through paths, `location` by index, the array of objects `facilities` with the
+// The data of the path tests: the arrays `location` and `partial` (with an undefined element), named by paths
+// without steps, and, resolved through paths, `location` by index, the array of objects `facilities` with the
 // fields `cost` and `flags`, and the matrix `grid` with grid[i][j] = 10 * i + j.
 struct PathData {
   std::vector<double> location = { 3.0, 1.0, 2.0 };
@@ -177,7 +180,7 @@ struct PathData {
   std::vector<double> cost = { 10.0, 20.0, 30.0 };
   std::vector< std::vector<double> > flags = { { 1.0, 0.0 }, { 0.0, 1.0 }, { 1.0, 1.0 } };
 
-  LIMEX::Resolver<double> resolver(const LIMEX::Expression<double>& expression) const {
+  LIMEX::Resolver<double> resolver(const LIMEX::Expression<double>& expression, const std::map<std::string, std::vector<double>>& extra) const {
     LIMEX::Resolver<double> resolver;
     resolver.value = [this, &expression](size_t path, const std::vector<double>& indices) -> double {
       const auto& description = expression.getPaths().at(path);
@@ -198,8 +201,13 @@ struct PathData {
       if ( description.name == "grid" && shape == "[][]" ) return 10.0 * indices[0] + indices[1];
       throw std::runtime_error("unsupported path '" + description.name + shape + "'");
     };
-    resolver.collection = [this, &expression](size_t path, const std::vector<double>& indices) -> LIMEX::View<double> {
+    resolver.collection = [this, &expression, &extra](size_t path, const std::vector<double>& indices) -> LIMEX::View<double> {
       const auto& description = expression.getPaths().at(path);
+      if ( description.steps.empty() ) {
+        if ( description.name == "location" ) return LIMEX::View<double>( location );
+        if ( description.name == "partial" ) return LIMEX::View<double>( partial );
+        return LIMEX::View<double>( extra.at(description.name) );
+      }
       if ( description.name == "facilities" && description.steps.size() == 2 && description.steps[1] == "flags" ) {
         if ( indices[0] < 1 || indices[0] > (double)flags.size() ) throw std::runtime_error("illegal index");
         return LIMEX::View<double>( flags[(size_t)indices[0] - 1] );
@@ -209,18 +217,9 @@ struct PathData {
     return resolver;
   }
 
-  std::vector< LIMEX::View<double> > collections(const LIMEX::Expression<double>& expression, const std::map<std::string, std::vector<double>>& extra) const {
-    std::vector< LIMEX::View<double> > views;
-    for ( auto collection : expression.getCollections() ) {
-      if ( collection == "location" ) views.emplace_back( location );
-      else if ( collection == "partial" ) views.emplace_back( partial );
-      else views.emplace_back( extra.at(collection) );
-    }
-    return views;
-  }
 };
 
-// Evaluates an expression with paths into the data above, the given variables and further collections.
+// Evaluates an expression with paths into the data above, the given variables and further arrays.
 void testPaths( std::string input, std::map<std::string,double> valueMap, double result, std::map<std::string,std::vector<double>> collectionMap = {} ) {
   LIMEX::Handle<double> handle;
   PathData data;
@@ -230,9 +229,8 @@ void testPaths( std::string input, std::map<std::string,double> valueMap, double
     for ( auto variable : expression.getVariables() ) {
       variableValues.push_back( valueMap.at(variable) );
     }
-    auto collectionValues = data.collections(expression, collectionMap);
-    auto resolver = data.resolver(expression);
-    double value = expression.evaluate(variableValues, collectionValues, resolver);
+    auto resolver = data.resolver(expression, collectionMap);
+    double value = expression.evaluate(variableValues, resolver);
     std::cerr << input << " = " << value;
     if ( value == result ) {
       std::cerr << GREEN_COLOR << " [pass]" << RESET_COLOR << std::endl;
@@ -258,10 +256,10 @@ void testTarget( std::string input, std::map<std::string,double> valueMap, doubl
     for ( auto variable : expression.getVariables() ) {
       variableValues.push_back( valueMap.at(variable) );
     }
-    auto collectionValues = data.collections(expression, {});
-    auto resolver = data.resolver(expression);
-    double value = expression.evaluate(variableValues, collectionValues, resolver);
-    auto targetIndices = expression.evaluateTargetIndices(variableValues, collectionValues, resolver);
+    std::map<std::string, std::vector<double>> none;
+    auto resolver = data.resolver(expression, none);
+    double value = expression.evaluate(variableValues, resolver);
+    auto targetIndices = expression.evaluateTargetIndices(variableValues, resolver);
     std::cerr << input << " assigns " << value << " to " << expression.getTarget().value_or("?") << " at [";
     for ( auto index : targetIndices ) std::cerr << " " << index;
     std::cerr << " ]";
