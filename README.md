@@ -136,7 +136,8 @@ The leading parts of the form `v in ...` whose name `v` is not yet bound are bin
 conditions. A condition testing the membership of a variable that is not bound must therefore not directly
 follow the bindings in this form, and is written in parentheses, e.g. `sum{ i | i in 1..3, (y in Y) }`. A
 range `m..n` is only allowed in a binding. An iterator must not have the name of a variable or collection of
-the expression, and is visible only within its aggregation.
+the expression, and is visible only within its aggregation. A condition whose value is undefined, i.e. NaN, is
+not satisfied, whereas a comparison with an undefined value is false, as for every `double`.
 
 ### Undefined values
 

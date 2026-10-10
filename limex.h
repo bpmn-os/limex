@@ -717,7 +717,9 @@ inline T Node<T,C>::evaluate( Context<T,C>& context ) const {
           auto proceed = [&](T value) {
             context.iteratorValues[slot] = value;
             for (size_t i = firstCondition; i < binding.operands.size(); ++i) {
-              if ( !std::get<Node>(binding.operands[i]).evaluate(context) ) {
+              T satisfied = std::get<Node>(binding.operands[i]).evaluate(context);
+              // an undefined condition, which is NaN, is not satisfied
+              if ( std::isnan((double)satisfied) || !satisfied ) {
                 return;
               }
             }

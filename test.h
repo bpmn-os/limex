@@ -479,6 +479,8 @@ void test() {
   testPaths("max(partial)", {}, 3.0);
   testPaths("sum{ p | p in partial }", {}, 4.0);
   testPaths("count{ p | p in partial }", {}, 2.0);
+  testPaths("sum{ 1 | p in partial, p }", {}, 2.0);
+  testPaths("sum{ 1 | p in partial, p - 1 }", {}, 1.0);
 
 // Assignments to paths
   testTarget("location[i] := j", { {"i", 2.0}, {"j", 7.0} }, 7.0, "location", { 2.0 }, { "i", "j" });
