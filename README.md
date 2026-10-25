@@ -96,7 +96,7 @@ A name followed by indices and fields, `name ( .field | [expression] )*`, is an 
 `sum(a)`, `x in a` or `d in a`, is a path without steps, which may also be written `a[]`. LIMEX knows nothing of the
 values a path addresses: it evaluates the index expressions and asks the caller to resolve the path. The paths
 of an expression are listed by `getPaths()`, each with its name and its steps, a step being a field name or,
-for an index, `std::nullopt`. The caller implements the interface `LIMEX::Resolver<T>`, whose two methods each
+for an index, `std::nullopt`. The caller implements the interface `LIMEX::Resolver<T>`, whose two pure methods each
 receive the position of the path in `getPaths()` and the values of its indices in order: `value` returns the
 value a path addresses, and `array` returns the array it addresses as a view. A path is resolved as an array
 where an array is expected, namely as the argument of an aggregator (`sum(facilities[i].flags)`), on the right
@@ -120,6 +120,37 @@ LIMEX::Expression<double> expression("x + a[i]", handle);
 std::vector<double> a = { 2.0, 5.0, 3.0 };
 Resolver resolver(a);
 std::cout << expression.evaluate( { 1.0, 2.0 }, resolver ) << std::endl; // x = 1, i = 2: prints 6
+```
+
+### Literals of the caller
+
+LIMEX reads numbers, `true` and `false` itself. Other literals, such as quoted texts or literals of arrays and
+structured values, are the caller's: a handle may be given a literal parser by `setLiteralParser`, which LIMEX
+offers the text at every position where an operand may begin, except directly after `in`, `not in`, `∈` and `∉`,
+whose sets and sequences LIMEX reads itself. The parser returns nothing where it recognises no literal, and
+otherwise a `LIMEX::Literal`, stating the number of characters the literal takes and what it denotes: either a
+value, which the expression holds as it holds a number, or the identifier of a constant, which the caller chooses.
+LIMEX knows nothing of a constant beyond its identifier and asks the resolver for it when the expression is
+evaluated, as it asks for a path: `constant` returns it as a value, and `constantArray` as an array, which is
+where an array is expected, namely as an argument of an aggregator, as in `sum([1, 2, 3])`. A resolver that does
+not override these two methods refuses constants. A handle without a literal parser reads expressions as before,
+so that a literal of the caller is an error there.
+
+```cpp
+// a quoted text is the value of its number of characters, and a single number in brackets is a constant
+std::vector< std::vector<double> > constants;
+handle.setLiteralParser( [&constants](std::string_view text) -> std::optional<LIMEX::Literal> {
+  if ( text.starts_with('"') ) {
+    auto end = text.find('"', 1);
+    return LIMEX::Literal{ end + 1, (double)(end - 1) };
+  }
+  if ( text.starts_with('[') ) {
+    auto end = text.find(']');
+    constants.push_back( { std::stod( std::string( text.substr(1, end - 1) ) ) } );
+    return LIMEX::Literal{ end + 1, constants.size() - 1 };
+  }
+  return std::nullopt;
+} );
 ```
 
 ### Assignments

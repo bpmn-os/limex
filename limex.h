@@ -6,6 +6,8 @@
 #include <optional>
 #include <vector>
 #include <string>
+#include <string_view>
+#include <format>
 #include <variant>
 #include <stdexcept>
 #include <functional>
@@ -31,7 +33,7 @@ namespace LIMEX {
  */
 struct Token {
   enum class Category { PREFIX, OPERAND, POSTFIX, INFIX }; /// Categories of input to be parsed by lexer
-  enum class Type { NUMBER, VARIABLE, OPERATOR, SEPARATOR, GROUP, SET, SEQUENCE, FUNCTION_CALL, AGGREGATION, PATH, FIELD, INDEX };
+  enum class Type { NUMBER, VARIABLE, OPERATOR, SEPARATOR, GROUP, SET, SEQUENCE, FUNCTION_CALL, AGGREGATION, PATH, FIELD, INDEX, CONSTANT };
   Token(Category category, Type type, std::string value = "") : category(category), type(type), value(std::move(value)) {}
   Category category;
   Type type;
@@ -129,6 +131,24 @@ public:
   virtual T value(size_t path, const std::vector<T>& indices) const = 0;
   /// @brief Returns the array the path with the given position addresses for the given values of its indices.
   virtual A array(size_t path, const std::vector<T>& indices) const = 0;
+  /// @brief Returns the value of the constant with the given identifier, which the literal parser of the handle chose.
+  virtual T constant(size_t identifier [[maybe_unused]]) const {
+    throw std::runtime_error("LIMEX: constants require a resolver supplying them");
+  }
+  /// @brief Returns the constant with the given identifier, which the literal parser of the handle chose, as an array.
+  virtual A constantArray(size_t identifier [[maybe_unused]]) const {
+    throw std::runtime_error("LIMEX: constants require a resolver supplying them");
+  }
+};
+
+/**
+ * @brief What a literal parser recognises at the beginning of a text: the number of characters the literal takes, and
+ * either the value it denotes or the identifier of the constant it denotes, which the host chooses and the resolver
+ * supplies when the expression is evaluated.
+ */
+struct Literal {
+  size_t length;
+  std::variant<double, size_t> denotation;
 };
 
 /**
@@ -201,8 +221,12 @@ public:
     const T& element,
     const A& array
   ) const;
+  /// @brief Sets the parser LIMEX offers the text at an operand position, except directly after a membership operator,
+  /// so that the host recognises literals of its own, returning nothing where it recognises none.
+  inline void setLiteralParser(std::function<std::optional<Literal>(std::string_view)> parser) { literalParser = std::move(parser); }
 private:
   inline void initialize();
+  std::function<std::optional<Literal>(std::string_view)> literalParser; ///< The parser of the literals of the host, if any
   std::vector<std::string> functionNames;
   std::vector<std::function<T(const std::vector<T>&)>> functionImplementations;
   std::vector<std::string> aggregatorNames;
@@ -256,8 +280,8 @@ private:
   std::optional<size_t> targetPath;
   Node<T,A> root;
   inline Node<T,A> parse();
-  inline static Token tokenize(const std::string& input);
-  inline static Token readPath(const std::string& input, size_t& pos, std::string name);
+  inline Token tokenize(const std::string& input) const;
+  inline Token readPath(const std::string& input, size_t& pos, std::string name) const;
   inline static bool isNameStart(char c) { return (std::isalpha( (unsigned char)c ) || c == '_'); };
   inline std::optional<size_t> boundIterator(const std::string& name) const;
   /// Evaluates the indices of the target path in the given context
@@ -289,6 +313,8 @@ enum class Type {
     iterator, // the iterator of a binding
     path, // an access path '<name>( .<field> | [<expression>] )*' resolved as a value
     array_path, // an access path resolved as an array
+    constant, // a constant of the host resolved as a value
+    array_constant, // a constant of the host resolved as an array
     negate,
     logical_not,
     logical_and,
@@ -335,6 +361,8 @@ constexpr auto typeName = std::to_array<std::string_view> ({
     "iterator", // the iterator of a binding
     "path", // an access path '<name>( .<field> | [<expression>] )*' resolved as a value
     "array_path", // an access path resolved as an array
+    "constant", // a constant of the host resolved as a value
+    "array_constant", // a constant of the host resolved as an array
     "negate",
     "logical_not",
     "logical_and",
@@ -497,6 +525,7 @@ inline std::string Token::stringify(int indent) const {
     case Type::GROUP: result += "GROUP"; break;
     case Type::SET: result += "SET"; break;
     case Type::SEQUENCE: result += "SEQUENCE"; break;
+    case Type::CONSTANT: result += "CONSTANT"; break;
     case Type::FUNCTION_CALL: result += "FUNCTION_CALL"; break;
     case Type::AGGREGATION: result += "AGGREGATION"; break;
     case Type::PATH: result += "PATH"; break;
@@ -673,10 +702,10 @@ inline T Node<T,A>::evaluate( Context<T,A>& context ) const {
       if (
         operands.size() >= 2 &&
         std::ranges::all_of(operands.begin() + 1, operands.end(), [](const auto& operand) {
-          return std::holds_alternative<Node>(operand) && std::get<Node>(operand).type == Type::array_path;
+          return std::holds_alternative<Node>(operand) && ( std::get<Node>(operand).type == Type::array_path || std::get<Node>(operand).type == Type::array_constant );
         })
       ) {
-        // the arguments are paths resolved as arrays, one for each array the aggregator takes
+        // the arguments are paths or constants resolved as arrays, one for each array the aggregator takes
         if constexpr (std::is_same_v< A, View<T> >) {
           // array type A is View<T>, which the aggregator takes as it is
           std::vector<View<T>> arrays;
@@ -789,6 +818,15 @@ inline T Node<T,A>::evaluate( Context<T,A>& context ) const {
       return context.resolver->value(path, evaluateIndices(context));
     }
     case Type::array_path:
+      throw std::runtime_error("LIMEX: Arrays cannot be evaluated");
+    case Type::constant:
+    {
+      if (!context.resolver) {
+        throw std::runtime_error("LIMEX: No resolver provided for constant " + std::to_string(std::get<size_t>(operands[0])));
+      }
+      return context.resolver->constant(std::get<size_t>(operands[0]));
+    }
+    case Type::array_constant:
       throw std::runtime_error("LIMEX: Arrays cannot be evaluated");
     case Type::element_of: {
       T element = std::get<Node>(operands[0]).evaluate(context);
@@ -928,6 +966,12 @@ inline A Node<T,A>::evaluateArray( Context<T,A>& context ) const {
     }
     return context.resolver->array(path, evaluateIndices(context));
   }
+  if (type == Type::array_constant) {
+    if (!context.resolver) {
+      throw std::runtime_error("LIMEX: No resolver provided for constant " + std::to_string(std::get<size_t>(operands[0])));
+    }
+    return context.resolver->constantArray(std::get<size_t>(operands[0]));
+  }
   throw std::logic_error("LIMEX: Node is not an array");
 }
 
@@ -969,6 +1013,9 @@ inline std::string Node<T,A>::stringify() const {
       }
       else if ( type == Type::aggregation || type == Type::aggregation_over ) {
         result += expression->handle.getAggregatorNames().at(std::get<size_t>(operand)) + ", ";
+      }
+      else if ( type == Type::constant || type == Type::array_constant ) {
+        result += std::to_string(std::get<size_t>(operand)) + ", ";
       }
       else {
         throw std::logic_error("LIMEX: Unexpected size_t operand in stringify for type '" + std::string(typeName[(int)type]) + "'");
@@ -1049,7 +1096,7 @@ inline Node<T,A> Expression<T,A>::parse() {
 }
 
 template <typename T, typename A>
-inline Token Expression<T,A>::tokenize(const std::string& input) {
+inline Token Expression<T,A>::tokenize(const std::string& input) const {
   Token root = Token( Token::Category::OPERAND, Token::Type::GROUP, "" );
   std::stack< std::pair<Token*,std::string_view> > groupStack;
   groupStack.emplace(&root,"#");
@@ -1071,6 +1118,32 @@ inline Token Expression<T,A>::tokenize(const std::string& input) {
         groupStack.top().first->children.emplace_back(Token::Category::PREFIX, Token::Type::OPERATOR, std::move(match));
       }
       expected = Token::Category::OPERAND;
+    }
+
+    if ( expected == Token::Category::OPERAND && handle.literalParser ) {
+      // a literal of the host, except where a membership operator is followed by a set or sequence of LIMEX
+      auto& siblings = groupStack.top().first->children;
+      bool membership = (
+        !siblings.empty() &&
+        siblings.back().type == Token::Type::OPERATOR &&
+        ( siblings.back().value == "in" || siblings.back().value == "not in" || siblings.back().value == "∈" || siblings.back().value == "∉" )
+      );
+      if ( !membership ) {
+        if ( auto literal = handle.literalParser( std::string_view(input).substr(pos) ) ) {
+          if ( literal->length == 0 || pos + literal->length > input.length() ) {
+            throw std::runtime_error("LIMEX: Literal parser returned an illegal length at: '" + input.substr(0,pos) + "'");
+          }
+          pos += literal->length;
+          if ( std::holds_alternative<double>(literal->denotation) ) {
+            groupStack.top().first->children.emplace_back(Token::Category::OPERAND, Token::Type::NUMBER, std::format("{}", std::get<double>(literal->denotation)));
+          }
+          else {
+            groupStack.top().first->children.emplace_back(Token::Category::OPERAND, Token::Type::CONSTANT, std::to_string(std::get<size_t>(literal->denotation)));
+          }
+          expected = Token::Category::POSTFIX;
+          continue;
+        }
+      }
     }
 
     if ( expected == Token::Category::OPERAND ) {
@@ -1283,7 +1356,7 @@ inline Token Expression<T,A>::tokenize(const std::string& input) {
 }
 
 template <typename T, typename A>
-inline Token Expression<T,A>::readPath(const std::string& input, size_t& pos, std::string name) {
+inline Token Expression<T,A>::readPath(const std::string& input, size_t& pos, std::string name) const {
   Token path(Token::Category::OPERAND, Token::Type::PATH, std::move(name));
   while (pos < input.length()) {
     if (input[pos] == '[') {
@@ -1387,6 +1460,8 @@ inline Node<T,A> Expression<T,A>::buildTree( Type type, const std::vector<Token>
     switch (token.type) {
       case Token::Type::NUMBER:
         return Node<T,A>(this, std::stod(token.value));
+      case Token::Type::CONSTANT:
+        return Node<T,A>(this, Type::constant, std::vector<std::variant<double, size_t, Node<T,A>>>{ (size_t)std::stoul(token.value) });
       case Token::Type::VARIABLE:
         if ( auto slot = boundIterator(token.value) ) {
           // the iterator of an enclosing aggregation
@@ -1426,8 +1501,8 @@ inline Node<T,A> Expression<T,A>::buildTree( Type type, const std::vector<Token>
       case Token::Type::FUNCTION_CALL:
         if (handle.isAggregator(token.value)) {
           // aggr(X) - aggregation over the array a path addresses, a name being a path without steps
-          // aggr(X, Y, ...) - aggregation over the arrays paths address, one for each array the aggregator takes, a
-          // name being a path without steps
+          // aggr(X, Y, ...) - aggregation over the arrays paths or constants address, one for each array the aggregator
+          // takes, a name being a path without steps
           size_t aggrIdx = handle.getAggregatorIndex(token.value);
           size_t arity = handle.aggregatorArities[aggrIdx];
           auto refuse = [&]() {
@@ -1441,6 +1516,11 @@ inline Node<T,A> Expression<T,A>::buildTree( Type type, const std::vector<Token>
               if (argument.type != Token::Type::SEPARATOR) {
                 throw refuse();
               }
+              continue;
+            }
+            if ( argument.type == Token::Type::CONSTANT ) {
+              // a constant of the host resolved as an array
+              aggregationOperands.push_back( Node<T,A>(this, Type::array_constant, std::vector<std::variant<double, size_t, Node<T,A>>>{ (size_t)std::stoul(argument.value) }) );
               continue;
             }
             if ( ( argument.type != Token::Type::VARIABLE && argument.type != Token::Type::PATH ) || boundIterator(argument.value) ) {

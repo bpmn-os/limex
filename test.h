@@ -213,6 +213,96 @@ void testCustomAggregatorParseError( std::string input ) {
   }
 }
 
+// The literals of the literal tests: a quoted text is a value, its number of characters, and a bracketed list of numbers
+// is a constant, whose identifier is its position among the constants read.
+struct LiteralData {
+  std::vector< std::vector<double> > constants;
+
+  std::optional<LIMEX::Literal> parse(std::string_view text) {
+    if ( text.starts_with('"') ) {
+      auto end = text.find('"', 1);
+      if ( end == std::string_view::npos ) throw std::runtime_error("unterminated text");
+      return LIMEX::Literal{ end + 1, (double)(end - 1) };
+    }
+    if ( text.starts_with('[') ) {
+      auto end = text.find(']');
+      if ( end == std::string_view::npos ) throw std::runtime_error("unterminated list");
+      std::vector<double> values;
+      std::string list(text.substr(1, end - 1));
+      size_t position = 0;
+      while ( position < list.size() ) {
+        auto comma = list.find(',', position);
+        values.push_back( std::stod( list.substr(position, comma - position) ) );
+        position = ( comma == std::string::npos ) ? list.size() : comma + 1;
+      }
+      constants.push_back(std::move(values));
+      return LIMEX::Literal{ end + 1, constants.size() - 1 };
+    }
+    return std::nullopt;
+  }
+};
+
+// Resolves the constants of the literal tests besides the arrays of a map, a constant read as a value having a single
+// value.
+class ConstantResolver : public MapResolver {
+public:
+  ConstantResolver(const LIMEX::Expression<double>& expression, const std::map<std::string,std::vector<double>>& arrays, const LiteralData& data) : MapResolver(expression, arrays), data(data) {}
+  double constant(size_t identifier) const override {
+    auto& values = data.constants.at(identifier);
+    if ( values.size() != 1 ) throw std::runtime_error("constant is no single value");
+    return values[0];
+  }
+  LIMEX::View<double> constantArray(size_t identifier) const override {
+    return LIMEX::View<double>( data.constants.at(identifier) );
+  }
+private:
+  const LiteralData& data;
+};
+
+// Evaluates an expression whose literals the literal parser of the tests reads, with the custom aggregators, its
+// constants being resolved unless the resolver is to lack them, in which case the evaluation must fail.
+void testLiteral( std::string input, std::map<std::string,std::vector<double>> arrayMap, std::optional<double> result, bool resolveConstants = true ) {
+  LIMEX::Handle<double> handle;
+  addCustomAggregators(handle);
+  LiteralData data;
+  handle.setLiteralParser( [&data](std::string_view text) { return data.parse(text); } );
+  try {
+    LIMEX::Expression<double> expression(input,handle);
+    double value = resolveConstants ?
+      expression.evaluate({}, ConstantResolver(expression, arrayMap, data)) :
+      expression.evaluate({}, MapResolver(expression, arrayMap));
+    std::cerr << input << " = " << value;
+    if ( result.has_value() && value == result.value() ) {
+      std::cerr << GREEN_COLOR << " [pass]" << RESET_COLOR << std::endl;
+    }
+    else {
+      std::cerr << RED_COLOR << " [fail, expected " << ( result.has_value() ? std::to_string(result.value()) : std::string("error") ) << "]" << RESET_COLOR << std::endl;
+    }
+  }
+  catch (const std::exception& e) {
+    if ( result.has_value() ) {
+      std::cerr << "Failed evaluating: " + input << RED_COLOR << " [fail]" << RESET_COLOR << std::endl;
+      std::cerr << e.what() << std::endl;
+    }
+    else {
+      std::cerr << input << " fails: " << e.what() << GREEN_COLOR << " [pass]" << RESET_COLOR << std::endl;
+    }
+  }
+}
+
+// Expects an expression to fail when it is parsed or evaluated with a handle without a literal parser.
+void testWithoutLiteralParser( std::string input ) {
+  LIMEX::Handle<double> handle;
+  try {
+    LIMEX::Expression<double> expression(input,handle);
+    double value = expression.evaluate();
+    std::cerr << input << " = " << value << RED_COLOR << " [fail, expected error]" << RESET_COLOR << std::endl;
+  }
+  catch (const std::exception& e) {
+    std::cerr << input << " fails without a literal parser: " << e.what() << GREEN_COLOR << " [pass]" << RESET_COLOR << std::endl;
+  }
+}
+
 // The data of the path tests: the arrays `location` and `partial` (with an undefined element), named by paths
 // without steps, and, resolved through paths, `location` by index, the array of objects `facilities` with the
 // fields `cost` and `flags`, and the matrix `grid` with grid[i][j] = 10 * i + j.
@@ -556,4 +646,14 @@ void test() {
   testCustomAggregatorParseError("dot(X, 2)"); // an argument that is no array
   testCustomAggregatorParseError("dot{ 1, 2 }"); // the brace form for an aggregator of two arrays
   testCustomAggregatorParseError("dot{ x * y | x in X, y in Y }"); // the brace form for an aggregator of two arrays
+  testLiteral("\"abc\" + 1", {}, 4.0); // a value the literal parser reads
+  testLiteral("[5] * 2", {}, 10.0); // a constant read as a value
+  testLiteral("sum([1, 2, 3])", {}, 6.0); // a constant as the array of an aggregator
+  testLiteral("dot([1, 2], [3, 4])", {}, 11.0); // constants as the arrays of an aggregator of two arrays
+  testLiteral("sum([1, 2]) + sum(X)", { {"X", { 3.0 }} }, 6.0); // a constant beside a path
+  testLiteral("3 in [\"abc\", \"x\"]", {}, 1.0); // a sequence after 'in' with values the literal parser reads
+  testLiteral("2 in [1, 2]", {}, 1.0); // a sequence after 'in' is no literal of the host
+  testLiteral("sum{1, 2}", {}, 3.0); // the brace form of an aggregator is no literal of the host
+  testLiteral("[5] * 2", {}, std::nullopt, false); // a resolver supplying no constants
+  testWithoutLiteralParser("[1] + 1"); // a sequence where no membership operator precedes it
 }
