@@ -189,7 +189,7 @@ friend class Expression<T,A>;
 public:
   Handle() { initialize(); };
   inline void addFunction(const std::string& name, std::function<T(const std::vector<T>&)> implementation);
-  inline void addAggregator(const std::string& name, std::function<T(const View<T>&)> implementation);
+  inline void addAggregator(const std::string& name, size_t arity, std::function<T(const std::vector<View<T>>&)> implementation);
   inline bool isAggregator(const std::string& name) const;
   inline const std::vector<std::string>& getFunctionNames() const { return functionNames; }
   inline const std::vector<std::string>& getAggregatorNames() const { return aggregatorNames; }
@@ -206,7 +206,8 @@ private:
   std::vector<std::string> functionNames;
   std::vector<std::function<T(const std::vector<T>&)>> functionImplementations;
   std::vector<std::string> aggregatorNames;
-  std::vector<std::function<T(const View<T>&)>> aggregatorImplementations;
+  std::vector<size_t> aggregatorArities; ///< The number of arrays each aggregator takes
+  std::vector<std::function<T(const std::vector<View<T>>&)>> aggregatorImplementations;
 };
 
 /**
@@ -670,34 +671,41 @@ inline T Node<T,A>::evaluate( Context<T,A>& context ) const {
         throw std::runtime_error("LIMEX: Aggregator index out of range");
       }
       if (
-        operands.size() == 2 &&
-        std::holds_alternative<Node>(operands[1]) &&
-        std::get<Node>(operands[1]).type == Type::array_path
+        operands.size() >= 2 &&
+        std::ranges::all_of(operands.begin() + 1, operands.end(), [](const auto& operand) {
+          return std::holds_alternative<Node>(operand) && std::get<Node>(operand).type == Type::array_path;
+        })
       ) {
-        // argument is a path resolved as an array
-        A array = std::get<Node>(operands[1]).evaluateArray(context);
-
+        // the arguments are paths resolved as arrays, one for each array the aggregator takes
         if constexpr (std::is_same_v< A, View<T> >) {
           // array type A is View<T>, which the aggregator takes as it is
-          return expression->handle.aggregatorImplementations[index](array);
+          std::vector<View<T>> arrays;
+          arrays.reserve(operands.size() - 1);
+          for (size_t i = 1; i < operands.size(); ++i) {
+            arrays.push_back( std::get<Node>(operands[i]).evaluateArray(context) );
+          }
+          return expression->handle.aggregatorImplementations[index](arrays);
         }
         else if constexpr (std::is_same_v< A, T >) {
-          // array type A is T
-          return expression->handle.aggregateEvaluation(expression->handle.getAggregatorNames()[index], array);
+          // array type A is T, which is aggregated as a whole
+          if (operands.size() != 2) {
+            throw std::runtime_error("LIMEX: Aggregation over several arrays requires arrays of type View");
+          }
+          return expression->handle.aggregateEvaluation(expression->handle.getAggregatorNames()[index], std::get<Node>(operands[1]).evaluateArray(context));
         }
         else {
           static_assert([]{ return false; }(), "LIMEX: unexpected array type");
         }
       }
       else {
-        // explicitly collect all evaluated arguments
+        // explicitly collect all evaluated arguments, which an aggregator of a single array takes as its values
         std::vector<T> arguments;
         for (size_t i = 1; i < operands.size(); ++i) {
           arguments.push_back(
             std::get<Node>(operands[i]).evaluate(context)
           );
         }
-        return expression->handle.aggregatorImplementations[index](arguments);
+        return expression->handle.aggregatorImplementations[index]({ View<T>(arguments) });
       }
     }
     case Type::aggregation_over:
@@ -759,7 +767,7 @@ inline T Node<T,A>::evaluate( Context<T,A>& context ) const {
           }
         };
         iterate(2);
-        return expression->handle.aggregatorImplementations[index](View<T>(values));
+        return expression->handle.aggregatorImplementations[index]({ View<T>(values) });
       }
       else {
         throw std::logic_error("LIMEX: Aggregation over an expression requires an arithmetic value type");
@@ -796,7 +804,7 @@ inline T Node<T,A>::evaluate( Context<T,A>& context ) const {
           arguments.push_back(std::get<Node>(elem).evaluate(context));
         }
         return expression->handle.aggregatorImplementations[
-          expression->handle.getAggregatorIndex("element_of")](arguments);
+          expression->handle.getAggregatorIndex("element_of")]({ View<T>(arguments) });
       }
     }
     case Type::not_element_of: {
@@ -813,7 +821,7 @@ inline T Node<T,A>::evaluate( Context<T,A>& context ) const {
           arguments.push_back(std::get<Node>(elem).evaluate(context));
         }
         return expression->handle.aggregatorImplementations[
-          expression->handle.getAggregatorIndex("not_element_of")](arguments);
+          expression->handle.getAggregatorIndex("not_element_of")]({ View<T>(arguments) });
       }
     }
     case Type::if_then_else: {
@@ -1418,19 +1426,36 @@ inline Node<T,A> Expression<T,A>::buildTree( Type type, const std::vector<Token>
       case Token::Type::FUNCTION_CALL:
         if (handle.isAggregator(token.value)) {
           // aggr(X) - aggregation over the array a path addresses, a name being a path without steps
-          if (
-            token.children.size() != 1 ||
-            ( token.children[0].type != Token::Type::VARIABLE && token.children[0].type != Token::Type::PATH ) ||
-            boundIterator(token.children[0].value)
-          ) {
-            throw std::runtime_error("LIMEX: Aggregator with () requires single array");
-          }
+          // aggr(X, Y, ...) - aggregation over the arrays paths address, one for each array the aggregator takes, a
+          // name being a path without steps
           size_t aggrIdx = handle.getAggregatorIndex(token.value);
-          Token array = token.children[0];
-          array.type = Token::Type::PATH;
-          Node<T,A> collNode = createNode(array);
-          collNode.type = Type::array_path;
-          return Node<T,A>(this, Type::aggregation, std::vector<std::variant<double, size_t, Node<T,A>>>{ aggrIdx, std::move(collNode) });
+          size_t arity = handle.aggregatorArities[aggrIdx];
+          auto refuse = [&]() {
+            return std::runtime_error("LIMEX: Aggregator '" + token.value + "' with () requires " + std::to_string(arity) + ( arity == 1 ? " array" : " arrays" ));
+          };
+          std::vector<std::variant<double, size_t, Node<T,A>>> aggregationOperands{ aggrIdx };
+          for (size_t i = 0; i < token.children.size(); ++i) {
+            // the arguments alternate with the separators between them
+            const Token& argument = token.children[i];
+            if (i % 2 == 1) {
+              if (argument.type != Token::Type::SEPARATOR) {
+                throw refuse();
+              }
+              continue;
+            }
+            if ( ( argument.type != Token::Type::VARIABLE && argument.type != Token::Type::PATH ) || boundIterator(argument.value) ) {
+              throw refuse();
+            }
+            Token array = argument;
+            array.type = Token::Type::PATH;
+            Node<T,A> arrayNode = createNode(array);
+            arrayNode.type = Type::array_path;
+            aggregationOperands.push_back(std::move(arrayNode));
+          }
+          if (aggregationOperands.size() != arity + 1) {
+            throw refuse();
+          }
+          return Node<T,A>(this, Type::aggregation, std::move(aggregationOperands));
         }
         return buildTree(Type::function_call, token.children, handle.getFunctionIndex(token.value));    
       case Token::Type::AGGREGATION:
@@ -1443,7 +1468,12 @@ inline Node<T,A> Expression<T,A>::buildTree( Type type, const std::vector<Token>
           // aggr{ expression | bindings, conditions }
           return buildAggregationOver(token);
         }
-        return buildTree(Type::aggregation, token.children, handle.getAggregatorIndex(token.value));
+        // aggr{a, b, c} - aggregation over the values given, which only an aggregator of a single array takes
+        size_t aggrIdx = handle.getAggregatorIndex(token.value);
+        if (handle.aggregatorArities[aggrIdx] != 1) {
+          throw std::runtime_error("LIMEX: Aggregator '" + token.value + "' requires " + std::to_string(handle.aggregatorArities[aggrIdx]) + " arrays and cannot be applied with {}");
+        }
+        return buildTree(Type::aggregation, token.children, aggrIdx);
       }
       default:
         throw std::logic_error("LIMEX: Unexpected token type for operand");
@@ -1622,6 +1652,9 @@ template <typename T, typename A>
 inline Node<T,A> Expression<T,A>::buildAggregationOver( const Token& token ) {
   const auto& children = token.children;
   size_t aggregator = handle.getAggregatorIndex(token.value);
+  if (handle.aggregatorArities[aggregator] != 1) {
+    throw std::runtime_error("LIMEX: Aggregator '" + token.value + "' requires " + std::to_string(handle.aggregatorArities[aggregator]) + " arrays and cannot be applied with {}");
+  }
   auto bar = std::ranges::find_if(children, [](const Token& child) {
     return child.type == Token::Type::OPERATOR && child.value == "|";
   });
@@ -1767,14 +1800,18 @@ inline void Handle<T,A>::addFunction(const std::string& name, std::function<T(co
 }
 
 template <typename T, typename A>
-inline void Handle<T,A>::addAggregator(const std::string& name, std::function<T(const View<T>&)> implementation) {
+inline void Handle<T,A>::addAggregator(const std::string& name, size_t arity, std::function<T(const std::vector<View<T>>&)> implementation) {
   if (std::ranges::contains(aggregatorNames, name)) {
     throw std::runtime_error("LIMEX: Aggregator '" + name + "' already exists");
   }
   if (std::ranges::contains(functionNames, name)) {
     throw std::runtime_error("LIMEX: '" + name + "' is already registered as function");
   }
+  if (arity == 0) {
+    throw std::runtime_error("LIMEX: Aggregator '" + name + "' requires at least one array");
+  }
   aggregatorNames.push_back(name);
+  aggregatorArities.push_back(arity);
   aggregatorImplementations.emplace_back(std::move(implementation));
 }
 
@@ -1806,7 +1843,7 @@ inline T Handle<T,A>::membershipEvaluation(
     for (const T& elem : array) {
       args.push_back(elem);
     }
-    return aggregatorImplementations.at(getAggregatorIndex(name))(View<T>(args));
+    return aggregatorImplementations.at(getAggregatorIndex(name))({ View<T>(args) });
   }
 }
 
@@ -1899,9 +1936,10 @@ inline void Handle<double>::initialize() {
 
   // Aggregators, which skip undefined values, represented by NaN, except for size
   addAggregator(
-    std::string("sum"),
-    [](const LIMEX::View<double>& args) -> double
+    std::string("sum"), 1,
+    [](const std::vector<LIMEX::View<double>>& arrays) -> double
     {
+      const auto& args = arrays[0];
       double result = 0.0;
       for ( double value : args ) {
         if ( !std::isnan(value) ) {
@@ -1913,9 +1951,10 @@ inline void Handle<double>::initialize() {
   );
 
   addAggregator(
-    std::string("avg"),
-    [](const LIMEX::View<double>& args) -> double
+    std::string("avg"), 1,
+    [](const std::vector<LIMEX::View<double>>& arrays) -> double
     {
+      const auto& args = arrays[0];
       double result = 0.0;
       size_t count = 0;
       for ( double value : args ) {
@@ -1930,9 +1969,10 @@ inline void Handle<double>::initialize() {
   );
 
   addAggregator(
-    std::string("count"),
-    [](const LIMEX::View<double>& args) -> double
+    std::string("count"), 1,
+    [](const std::vector<LIMEX::View<double>>& arrays) -> double
     {
+      const auto& args = arrays[0];
       size_t count = 0;
       for ( double value : args ) {
         if ( !std::isnan(value) ) {
@@ -1944,17 +1984,19 @@ inline void Handle<double>::initialize() {
   );
 
   addAggregator(
-    std::string("size"),
-    [](const LIMEX::View<double>& args) -> double
+    std::string("size"), 1,
+    [](const std::vector<LIMEX::View<double>>& arrays) -> double
     {
+      const auto& args = arrays[0];
       return (double)args.size();
     }
   );
 
   addAggregator(
-    std::string("min"),
-    [](const LIMEX::View<double>& args) -> double
+    std::string("min"), 1,
+    [](const std::vector<LIMEX::View<double>>& arrays) -> double
     {
+      const auto& args = arrays[0];
       double result = DBL_MAX;
       bool defined = false;
       for ( double value : args ) {
@@ -1972,9 +2014,10 @@ inline void Handle<double>::initialize() {
   );
 
   addAggregator(
-    std::string("max"),
-    [](const LIMEX::View<double>& args) -> double
+    std::string("max"), 1,
+    [](const std::vector<LIMEX::View<double>>& arrays) -> double
     {
+      const auto& args = arrays[0];
       double result = -DBL_MAX;
       bool defined = false;
       for ( double value : args ) {
@@ -1992,9 +2035,10 @@ inline void Handle<double>::initialize() {
   );
 
   addAggregator(
-    std::string("element_of"),
-    [](const LIMEX::View<double>& args) -> double
+    std::string("element_of"), 1,
+    [](const std::vector<LIMEX::View<double>>& arrays) -> double
     {
+      const auto& args = arrays[0];
       if (args.empty()) throw std::runtime_error("LIMEX: ∈ {...} requires at least one argument");
       for ( size_t i = 1; i < args.size(); i++ ) {
         if (args[0] == args[i]) {
@@ -2006,9 +2050,10 @@ inline void Handle<double>::initialize() {
   );
 
   addAggregator(
-    std::string("not_element_of"),
-    [](const LIMEX::View<double>& args) -> double
+    std::string("not_element_of"), 1,
+    [](const std::vector<LIMEX::View<double>>& arrays) -> double
     {
+      const auto& args = arrays[0];
       if (args.empty()) throw std::runtime_error("LIMEX: ∉ {...} requires at least one argument");
       for ( size_t i = 1; i < args.size(); i++ ) {
         if (args[0] == args[i]) {

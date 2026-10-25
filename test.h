@@ -161,13 +161,28 @@ void testComputed( std::string input, size_t size, double result ) {
   }
 }
 
-// Evaluates an expression with a custom aggregator `second`, returning the second value of a view.
-void testCustomAggregator( std::string input, std::map<std::string,std::vector<double>> arrayMap, double result ) {
-  LIMEX::Handle<double> handle;
-  handle.addAggregator( "second", [](const LIMEX::View<double>& values) -> double {
+// Registers the custom aggregators `second`, returning the second value of an array, and `dot`, returning the sum of
+// the products of the values of two arrays of the same size.
+void addCustomAggregators( LIMEX::Handle<double>& handle ) {
+  handle.addAggregator( "second", 1, [](const std::vector<LIMEX::View<double>>& arrays) -> double {
+    auto& values = arrays[0];
     if ( values.size() < 2 ) throw std::runtime_error("second{} requires at least two values");
     return values[1];
   });
+  handle.addAggregator( "dot", 2, [](const std::vector<LIMEX::View<double>>& arrays) -> double {
+    if ( arrays[0].size() != arrays[1].size() ) throw std::runtime_error("dot() requires arrays of the same size");
+    double result = 0.0;
+    for ( size_t k = 0; k < arrays[0].size(); k++ ) {
+      result += arrays[0][k] * arrays[1][k];
+    }
+    return result;
+  });
+}
+
+// Evaluates an expression with the custom aggregators.
+void testCustomAggregator( std::string input, std::map<std::string,std::vector<double>> arrayMap, double result ) {
+  LIMEX::Handle<double> handle;
+  addCustomAggregators(handle);
   try {
     LIMEX::Expression<double> expression(input,handle);
     MapResolver resolver(expression, arrayMap);
@@ -182,6 +197,19 @@ void testCustomAggregator( std::string input, std::map<std::string,std::vector<d
   catch (const std::exception& e) {
     std::cerr << "Failed evaluating: " + input << std::endl;
     std::cerr << e.what() << std::endl;
+  }
+}
+
+// Expects an expression with the custom aggregators to be refused when parsed.
+void testCustomAggregatorParseError( std::string input ) {
+  LIMEX::Handle<double> handle;
+  addCustomAggregators(handle);
+  try {
+    LIMEX::Expression<double> expression(input,handle);
+    std::cerr << "Parse '" << input << "' succeeded" << RED_COLOR << " [fail, expected error]" << RESET_COLOR << std::endl;
+  }
+  catch (const std::exception& e) {
+    std::cerr << "Parse '" << input << "' fails: " << e.what() << GREEN_COLOR << " [pass]" << RESET_COLOR << std::endl;
   }
 }
 
@@ -329,7 +357,7 @@ void test() {
   test("min{1,2,3}", 1); // set operation
   test("max{1,2,3}", 3); // set operation
   test("sum{x, y, z}", { {"x", 1.0}, {"y", 2.0}, {"z", 3.0} }, 6.0); // set with variables
-  testParseError("sum(a, b, c)"); // aggregator with () requires single array
+  testParseError("sum(a, b, c)"); // aggregator with () requires one array per array it takes
   test("5*4²", 5*4*4); // postfix and infix
   test("!2³", !std::pow(2,3)); // prefix and postfix
   test("-2³ * 2", -std::pow(2,3) * 2 ); // prefix, postfix and infix
@@ -520,4 +548,12 @@ void test() {
   // custom aggregator receiving a view, of an array and of explicit arguments
   testCustomAggregator("second(X)", { {"X", { 7.0, 8.0, 9.0 }} }, 8.0);
   testCustomAggregator("second{ 3, 4, 5 }", {}, 4.0);
+  testCustomAggregator("dot(X, Y)", { {"X", { 1.0, 2.0, 3.0 }}, {"Y", { 4.0, 5.0, 6.0 }} }, 32.0);
+  testCustomAggregator("dot(X, X) - 2 * second(X)", { {"X", { 1.0, 2.0 }} }, 1.0);
+  testCustomAggregatorParseError("dot(X)"); // too few arrays
+  testCustomAggregatorParseError("dot(X, Y, Z)"); // too many arrays
+  testCustomAggregatorParseError("second(X, Y)"); // too many arrays
+  testCustomAggregatorParseError("dot(X, 2)"); // an argument that is no array
+  testCustomAggregatorParseError("dot{ 1, 2 }"); // the brace form for an aggregator of two arrays
+  testCustomAggregatorParseError("dot{ x * y | x in X, y in Y }"); // the brace form for an aggregator of two arrays
 }

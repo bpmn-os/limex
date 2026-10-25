@@ -244,19 +244,32 @@ LIMEX includes a number of built-in functions and aggregators:
 | `min{ e \| i in m..n, c, ... }` | Returns the minimum of `e` over all `i` from `m` to `n` satisfying the conditions. |
 | `max{ e \| i in m..n, c, ... }` | Returns the maximum of `e` over all `i` from `m` to `n` satisfying the conditions. |
 | `sum(X)`, `count(X)`, `size(X)`, ... | Applies the aggregator to the values of the array a name or path addresses. |
+| `aggr(X, Y, ...)`   | Applies an aggregator taking several arrays to the arrays the names or paths address. |
 | `x ∈ { a, b, ...}`  | Returns true if `x` is in the set.                                               |
 | `x ∉ { a, b, ...}`  | Returns true if `x` is not in the set.                                           |
 | `x in X`            | Returns true if `x` is in the array `X`, a name or path.                         |
 | `x not in X`        | Returns true if `x` is not in the array `X`, a name or path.                     |
 
 Custom function and aggregator definitions can be added. A function receives its evaluated arguments as a
-`std::vector<T>`, an aggregator receives its values as a `const LIMEX::View<T>&`, whether they are the values
-of an array or the evaluated arguments of an aggregation such as `second{a, b, c}`:
+`std::vector<T>`. An aggregator is registered with the number of arrays it takes, its arity, and receives its
+arrays as a `const std::vector<LIMEX::View<T>>&`, one view for each array. An aggregator taking one array is
+applied with `()` to a name or path, `second(X)`, or with `{}` to the evaluated arguments of an aggregation,
+`second{a, b, c}` or `second{ e | i in X }`, which it receives as a single view. An aggregator taking several
+arrays is applied with `()` only, to as many names or paths as it takes arrays, `dot(X, Y)`; a call with a
+different number of arguments, an argument that is no name or path, and the form with `{}` are refused when the
+expression is parsed.
 
 ```cpp
 LIMEX::Handle<double> handle;
 handle.addFunction( "half", [](const std::vector<double>& args) { return args.at(0) / 2; } );
-handle.addAggregator( "second", [](const LIMEX::View<double>& values) { return values[1]; } );
+handle.addAggregator( "second", 1, [](const std::vector<LIMEX::View<double>>& arrays) { return arrays[0][1]; } );
+handle.addAggregator( "dot", 2, [](const std::vector<LIMEX::View<double>>& arrays) {
+  double result = 0.0;
+  for ( size_t k = 0; k < arrays[0].size() && k < arrays[1].size(); k++ ) {
+    result += arrays[0][k] * arrays[1][k];
+  }
+  return result;
+} );
 ```
 
 ## Build test example
